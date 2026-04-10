@@ -1,0 +1,48 @@
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv_arm64/
+venv/
+env/
+
+# Frontend
+node_modules/
+dist/
+build/
+.next/
+
+# Logs / temp files
+*.log
+tmp/
+temp/
+
+# Generated experiment outputs
+artifacts/
+**/checkpoints/
+**/tensorboard/
+**/wandb/
+
+# Nested external repos / submodule-style directories
+OmniVoice/
+cloneval/
+cli/
