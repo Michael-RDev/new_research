@@ -59,6 +59,11 @@ from omnivoice.utils.audio import (
     remove_silence,
     trim_long_audio,
 )
+from omnivoice.models.mnemosvoice import (
+    MemoryConditioner,
+    ProsodyPlanAdapter,
+    SpeakerMemoryEncoder,
+)
 from omnivoice.utils.duration import RuleDurationEstimator
 from omnivoice.utils.lang_map import LANG_IDS, LANG_NAMES
 from omnivoice.utils.text import add_punctuation, chunk_text_punctuation
@@ -146,6 +151,8 @@ class GenerationTask:
 class OmniVoiceModelOutput(ModelOutput):
     loss: Optional[torch.Tensor] = None
     logits: Optional[torch.Tensor] = None
+    plan_loss: Optional[torch.Tensor] = None
+    speaker_loss: Optional[torch.Tensor] = None
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +170,16 @@ class OmniVoiceConfig(PretrainedConfig):
         audio_mask_id: int = 1024,
         num_audio_codebook: int = 8,
         audio_codebook_weights: Optional[list[float]] = None,
+        architecture_variant: str = "omnivoice",
+        speaker_memory_num_tokens: int = 8,
+        planner_stride: int = 4,
+        planner_loss_weight: float = 0.2,
+        speaker_loss_weight: float = 0.05,
+        memory_conditioning_num_heads: int = 8,
+        memory_conditioning_dropout: float = 0.1,
+        mnemosvoice_use_speaker_memory: bool = True,
+        mnemosvoice_use_prosody_planner: bool = True,
+        mnemosvoice_use_speaker_consistency_loss: bool = True,
         llm_config: Optional[Union[dict, PretrainedConfig]] = None,
         **kwargs,
     ):
@@ -176,6 +193,18 @@ class OmniVoiceConfig(PretrainedConfig):
         self.audio_vocab_size = audio_vocab_size
         self.audio_mask_id = audio_mask_id
         self.num_audio_codebook = num_audio_codebook
+        self.architecture_variant = architecture_variant
+        self.speaker_memory_num_tokens = speaker_memory_num_tokens
+        self.planner_stride = planner_stride
+        self.planner_loss_weight = planner_loss_weight
+        self.speaker_loss_weight = speaker_loss_weight
+        self.memory_conditioning_num_heads = memory_conditioning_num_heads
+        self.memory_conditioning_dropout = memory_conditioning_dropout
+        self.mnemosvoice_use_speaker_memory = mnemosvoice_use_speaker_memory
+        self.mnemosvoice_use_prosody_planner = mnemosvoice_use_prosody_planner
+        self.mnemosvoice_use_speaker_consistency_loss = (
+            mnemosvoice_use_speaker_consistency_loss
+        )
         if audio_codebook_weights is None:
             audio_codebook_weights = [8, 8, 6, 6, 4, 4, 2, 2]
         self.audio_codebook_weights = audio_codebook_weights
@@ -212,6 +241,40 @@ class OmniVoice(PreTrainedModel):
             bias=False,
         )
 
+        self.speaker_memory_encoder = None
+        self.prosody_planner = None
+        self.memory_conditioner = None
+        self.target_speaker_proj = None
+        if self._mnemosvoice_enabled:
+            hidden_size = self.config.llm_config.hidden_size
+            num_heads = self.config.memory_conditioning_num_heads
+            dropout = self.config.memory_conditioning_dropout
+            if self.config.mnemosvoice_use_speaker_memory:
+                self.speaker_memory_encoder = SpeakerMemoryEncoder(
+                    hidden_size=hidden_size,
+                    num_memory_tokens=self.config.speaker_memory_num_tokens,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+            if self.config.mnemosvoice_use_prosody_planner:
+                self.prosody_planner = ProsodyPlanAdapter(
+                    hidden_size=hidden_size,
+                    vocab_size=self.config.audio_vocab_size,
+                    stride=self.config.planner_stride,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+            self.memory_conditioner = MemoryConditioner(
+                hidden_size=hidden_size,
+                num_heads=num_heads,
+                dropout=dropout,
+            )
+            if self.config.mnemosvoice_use_speaker_consistency_loss:
+                self.target_speaker_proj = nn.Sequential(
+                    nn.LayerNorm(hidden_size),
+                    nn.Linear(hidden_size, hidden_size),
+                )
+
         self.normalized_audio_codebook_weights = [
             w / sum(config.audio_codebook_weights)
             for w in config.audio_codebook_weights
@@ -225,6 +288,10 @@ class OmniVoice(PreTrainedModel):
         self.duration_estimator = None
         self.sampling_rate = None
         self._asr_pipe = None
+
+    @property
+    def _mnemosvoice_enabled(self) -> bool:
+        return getattr(self.config, "architecture_variant", "omnivoice") == "mnemosvoice"
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
@@ -367,6 +434,182 @@ class OmniVoice(PreTrainedModel):
 
         return torch.where(audio_mask.unsqueeze(-1), audio_embeds, text_embeds)
 
+    def _audio_token_embeddings(self, audio_ids: torch.Tensor) -> torch.Tensor:
+        """Embed a [C, T] or [B, C, T] audio-token tensor into [T, H]/[B, T, H]."""
+        squeeze = False
+        if audio_ids.dim() == 2:
+            audio_ids = audio_ids.unsqueeze(0)
+            squeeze = True
+        shifted_ids = audio_ids + self.codebook_layer_offsets.view(1, -1, 1).to(
+            audio_ids.device
+        )
+        embeds = self.audio_embeddings(shifted_ids).sum(dim=1)
+        return embeds.squeeze(0) if squeeze else embeds
+
+    def _reconstruct_audio_targets(
+        self,
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Recover full target audio tokens from masked inputs and labels."""
+        if labels is None:
+            return input_ids
+        return torch.where(labels != -100, labels, input_ids)
+
+    def _default_target_audio_mask(
+        self,
+        input_ids: torch.Tensor,
+        audio_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fallback inference-only target mask when explicit metadata is absent."""
+        all_masked = (input_ids == self.config.audio_mask_id).all(dim=1)
+        return audio_mask & all_masked
+
+    def _apply_mnemosvoice_conditioning(
+        self,
+        hidden_states: torch.Tensor,
+        input_ids: torch.Tensor,
+        audio_mask: torch.Tensor,
+        prompt_mask: Optional[torch.Tensor] = None,
+        target_audio_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        document_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Apply prompt-memory and coarse planning to target hidden states."""
+        if not self._mnemosvoice_enabled:
+            return hidden_states, None, None
+
+        if prompt_mask is None:
+            prompt_mask = torch.zeros_like(audio_mask)
+        if target_audio_mask is None:
+            target_audio_mask = self._default_target_audio_mask(input_ids, audio_mask)
+
+        full_audio_targets = self._reconstruct_audio_targets(input_ids, labels)
+        conditioned = hidden_states.clone()
+        plan_losses = []
+        speaker_losses = []
+
+        for b in range(hidden_states.size(0)):
+            if document_ids is None:
+                doc_ids = [0]
+                batch_doc_ids = torch.zeros(
+                    hidden_states.size(1),
+                    dtype=torch.long,
+                    device=hidden_states.device,
+                )
+            else:
+                batch_doc_ids = document_ids[b].to(hidden_states.device)
+                doc_ids = [
+                    int(d.item())
+                    for d in torch.unique(batch_doc_ids)
+                    if int(d.item()) >= 0
+                ]
+
+            for doc_id in doc_ids:
+                if document_ids is None:
+                    doc_mask = torch.ones(
+                        hidden_states.size(1),
+                        dtype=torch.bool,
+                        device=hidden_states.device,
+                    )
+                else:
+                    doc_mask = batch_doc_ids == doc_id
+
+                prompt_positions = torch.nonzero(
+                    prompt_mask[b] & doc_mask, as_tuple=False
+                ).squeeze(-1)
+                target_positions = torch.nonzero(
+                    target_audio_mask[b] & doc_mask, as_tuple=False
+                ).squeeze(-1)
+
+                if target_positions.numel() == 0:
+                    continue
+
+                if prompt_positions.numel() > 0:
+                    prompt_tokens = input_ids[b, :, prompt_positions]
+                    prompt_hidden = self._audio_token_embeddings(prompt_tokens).unsqueeze(
+                        0
+                    )
+                    prompt_valid = torch.ones(
+                        1,
+                        prompt_hidden.size(1),
+                        dtype=torch.bool,
+                        device=hidden_states.device,
+                    )
+                else:
+                    prompt_hidden = hidden_states.new_zeros(
+                        (1, 0, hidden_states.size(-1))
+                    )
+                    prompt_valid = torch.zeros(
+                        1, 0, dtype=torch.bool, device=hidden_states.device
+                    )
+
+                if self.speaker_memory_encoder is not None:
+                    speaker_tokens, speaker_global, has_prompt = (
+                        self.speaker_memory_encoder(prompt_hidden, prompt_valid)
+                    )
+                else:
+                    has_prompt = prompt_valid.any(dim=1)
+                    if bool(has_prompt.item()):
+                        speaker_global = prompt_hidden.mean(dim=1)
+                    else:
+                        speaker_global = hidden_states.new_zeros(
+                            (1, hidden_states.size(-1))
+                        )
+                    speaker_tokens = speaker_global.unsqueeze(1)
+
+                target_hidden = hidden_states[b, target_positions].unsqueeze(0)
+                target_codebook0 = full_audio_targets[
+                    b : b + 1, 0, target_positions
+                ]
+
+                memory_parts = [speaker_tokens]
+                if self.prosody_planner is not None:
+                    plan_memory, plan_loss, _ = self.prosody_planner(
+                        target_hidden=target_hidden,
+                        speaker_tokens=speaker_tokens,
+                        target_tokens=target_codebook0 if labels is not None else None,
+                    )
+                    memory_parts.append(plan_memory)
+                    if plan_loss is not None:
+                        plan_losses.append(plan_loss)
+
+                if self.memory_conditioner is not None:
+                    memory_tokens = torch.cat(memory_parts, dim=1)
+                    conditioned_target = self.memory_conditioner(
+                        target_hidden=target_hidden,
+                        memory_tokens=memory_tokens,
+                    )
+                else:
+                    conditioned_target = target_hidden
+                conditioned[b, target_positions] = conditioned_target.squeeze(0)
+
+                if (
+                    self.target_speaker_proj is not None
+                    and bool(has_prompt.item())
+                ):
+                    pooled_target = conditioned_target.mean(dim=1)
+                    target_speaker = F.normalize(
+                        self.target_speaker_proj(pooled_target), dim=-1
+                    )
+                    ref_speaker = F.normalize(speaker_global, dim=-1)
+                    speaker_losses.append(
+                        1.0
+                        - F.cosine_similarity(
+                            target_speaker,
+                            ref_speaker,
+                            dim=-1,
+                        ).mean()
+                    )
+
+        plan_loss = None
+        speaker_loss = None
+        if plan_losses:
+            plan_loss = torch.stack(plan_losses).mean()
+        if speaker_losses:
+            speaker_loss = torch.stack(speaker_losses).mean()
+        return conditioned, plan_loss, speaker_loss
+
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -375,6 +618,8 @@ class OmniVoice(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         document_ids: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
+        prompt_mask: Optional[torch.Tensor] = None,
+        target_audio_mask: Optional[torch.Tensor] = None,
     ):
 
         inputs_embeds = self._prepare_embed_inputs(input_ids, audio_mask)
@@ -399,6 +644,19 @@ class OmniVoice(PreTrainedModel):
             position_ids=position_ids,
         )
         hidden_states = llm_outputs[0]
+
+        plan_loss = None
+        speaker_loss = None
+        if self._mnemosvoice_enabled:
+            hidden_states, plan_loss, speaker_loss = self._apply_mnemosvoice_conditioning(
+                hidden_states=hidden_states,
+                input_ids=input_ids,
+                audio_mask=audio_mask,
+                prompt_mask=prompt_mask,
+                target_audio_mask=target_audio_mask,
+                labels=labels,
+                document_ids=document_ids,
+            )
 
         loss = None
 
@@ -436,10 +694,16 @@ class OmniVoice(PreTrainedModel):
                 self.normalized_audio_codebook_weights, device=audio_logits.device
             )
             loss = (layer_means * weights).sum()
+            if plan_loss is not None:
+                loss = loss + self.config.planner_loss_weight * plan_loss
+            if speaker_loss is not None:
+                loss = loss + self.config.speaker_loss_weight * speaker_loss
 
         return OmniVoiceModelOutput(
             loss=loss,
             logits=audio_logits,
+            plan_loss=plan_loss,
+            speaker_loss=speaker_loss,
         )
 
     def supported_language_ids(self) -> set[str]:
@@ -1110,9 +1374,25 @@ class OmniVoice(PreTrainedModel):
         )
         cond_audio_mask[0, cond_audio_start_idx:] = True
 
+        prompt_mask = torch.zeros(
+            1, cond_total_length, dtype=torch.bool, device=self.device
+        )
+        target_audio_mask = torch.zeros(
+            1, cond_total_length, dtype=torch.bool, device=self.device
+        )
+        if ref_audio_tokens is not None:
+            prompt_start = cond_audio_start_idx
+            prompt_end = prompt_start + ref_audio_tokens.size(-1)
+            prompt_mask[0, prompt_start:prompt_end] = True
+            target_audio_mask[0, prompt_end:] = True
+        else:
+            target_audio_mask[0, cond_audio_start_idx:] = True
+
         return {
             "input_ids": cond_input_ids,
             "audio_mask": cond_audio_mask,
+            "prompt_mask": prompt_mask,
+            "target_audio_mask": target_audio_mask,
         }
 
     def _generate_iterative(
@@ -1169,6 +1449,12 @@ class OmniVoice(PreTrainedModel):
         batch_audio_mask = torch.zeros(
             (2 * B, max_c_len), dtype=torch.bool, device=self.device
         )
+        batch_prompt_mask = torch.zeros(
+            (2 * B, max_c_len), dtype=torch.bool, device=self.device
+        )
+        batch_target_audio_mask = torch.zeros(
+            (2 * B, max_c_len), dtype=torch.bool, device=self.device
+        )
         batch_attention_mask = torch.zeros(
             (2 * B, 1, max_c_len, max_c_len), dtype=torch.bool, device=self.device
         )
@@ -1179,11 +1465,14 @@ class OmniVoice(PreTrainedModel):
             # Cond (0 ~ B-1)
             batch_input_ids[i, :, :c_len] = inp["input_ids"]
             batch_audio_mask[i, :c_len] = inp["audio_mask"]
+            batch_prompt_mask[i, :c_len] = inp["prompt_mask"]
+            batch_target_audio_mask[i, :c_len] = inp["target_audio_mask"]
             batch_attention_mask[i, :, :c_len, :c_len] = True
 
             # Uncond (B ~ 2B-1)
             batch_input_ids[B + i, :, :u_len] = inp["input_ids"][..., -u_len:]
             batch_audio_mask[B + i, :u_len] = inp["audio_mask"][..., -u_len:]
+            batch_target_audio_mask[B + i, :u_len] = True
             batch_attention_mask[B + i, :, :u_len, :u_len] = True
             if max_c_len > u_len:
                 pad_diag = torch.arange(u_len, max_c_len, device=self.device)
@@ -1228,6 +1517,8 @@ class OmniVoice(PreTrainedModel):
             batch_logits = self(
                 input_ids=batch_input_ids,
                 audio_mask=batch_audio_mask,
+                prompt_mask=batch_prompt_mask,
+                target_audio_mask=batch_target_audio_mask,
                 attention_mask=batch_attention_mask,
             ).logits.to(torch.float32)
 

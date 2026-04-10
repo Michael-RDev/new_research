@@ -92,6 +92,16 @@ def build_model_and_tokenizer(
             audio_mask_id=config.audio_mask_id,
             num_audio_codebook=config.num_audio_codebook,
             audio_codebook_weights=config.audio_codebook_weights,
+            architecture_variant=config.architecture_variant,
+            speaker_memory_num_tokens=config.speaker_memory_num_tokens,
+            planner_stride=config.planner_stride,
+            planner_loss_weight=config.planner_loss_weight,
+            speaker_loss_weight=config.speaker_loss_weight,
+            memory_conditioning_num_heads=config.memory_conditioning_num_heads,
+            memory_conditioning_dropout=config.memory_conditioning_dropout,
+            mnemosvoice_use_speaker_memory=config.mnemosvoice_use_speaker_memory,
+            mnemosvoice_use_prosody_planner=config.mnemosvoice_use_prosody_planner,
+            mnemosvoice_use_speaker_consistency_loss=config.mnemosvoice_use_speaker_consistency_loss,
             llm_config=llm_config,
         )
 

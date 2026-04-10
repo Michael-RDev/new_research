@@ -38,6 +38,16 @@ class TrainingConfig:
     audio_vocab_size: int = 1025  # valid vocab size + 1 (mask token)
     audio_mask_id: int = 1024  # 1024 is the 1025-th token
     num_audio_codebook: int = 8
+    architecture_variant: str = "omnivoice"
+    speaker_memory_num_tokens: int = 8
+    planner_stride: int = 4
+    planner_loss_weight: float = 0.2
+    speaker_loss_weight: float = 0.05
+    memory_conditioning_num_heads: int = 8
+    memory_conditioning_dropout: float = 0.1
+    mnemosvoice_use_speaker_memory: bool = True
+    mnemosvoice_use_prosody_planner: bool = True
+    mnemosvoice_use_speaker_consistency_loss: bool = True
 
     # Model Training Specific
     audio_codebook_weights: List[float | int] = field(

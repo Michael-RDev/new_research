@@ -1,0 +1,141 @@
+{
+  "train": [
+    {
+      "dataset_name": "emilia",
+      "language_id": "de",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_de_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "emilia",
+      "language_id": "en",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_en_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "emilia",
+      "language_id": "fr",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_fr_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "emilia",
+      "language_id": "ja",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_ja_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "emilia",
+      "language_id": "ko",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_ko_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "emilia",
+      "language_id": "zh",
+      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_zh_train/data.lst"],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "peoples_speech",
+      "language_id": "en",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_sa_train/data.lst"
+      ],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "mls",
+      "language_id": "multilingual",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/mls_de_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_es_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_fr_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_it_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_nl_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_pl_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_pt_train/data.lst"
+      ],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "waxal",
+      "language_id": "multilingual",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/waxal_am_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_dag_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ff_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ha_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ig_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ln_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_luo_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_om_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_sn_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_sw_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ti_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_tw_train/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_yo_train/data.lst"
+      ],
+      "repeat": 1
+    }
+  ],
+  "dev": [
+    {
+      "dataset_name": "emilia",
+      "language_id": "multilingual",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/emilia_de_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/emilia_en_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/emilia_fr_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/emilia_ja_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/emilia_ko_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/emilia_zh_dev/data.lst"
+      ],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "peoples_speech",
+      "language_id": "en",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_sa_dev/data.lst"
+      ],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "mls",
+      "language_id": "multilingual",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/mls_de_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_es_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_fr_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_it_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_nl_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_pl_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/mls_pt_dev/data.lst"
+      ],
+      "repeat": 1
+    },
+    {
+      "dataset_name": "waxal",
+      "language_id": "multilingual",
+      "manifest_path": [
+        "/workspace/data/tokens/stage1_smoke/waxal_am_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_dag_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ff_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ha_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ig_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ln_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_luo_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_om_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_sn_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_sw_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_ti_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_tw_dev/data.lst",
+        "/workspace/data/tokens/stage1_smoke/waxal_yo_dev/data.lst"
+      ],
+      "repeat": 1
+    }
+  ]
+}

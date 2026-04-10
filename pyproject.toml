@@ -54,10 +54,21 @@ eval = [
     "unidecode",            # Unicode normalization
 ]
 
+research = [
+    "datasets>=3.0.0",
+    "huggingface_hub>=0.30.0",
+    "requests>=2.31.0",
+]
+
 [project.scripts]
 omnivoice-infer = "omnivoice.cli.infer:main"
 omnivoice-infer-batch = "omnivoice.cli.infer_batch:main"
 omnivoice-demo = "omnivoice.cli.demo:main"
+omnivoice-cloneval = "omnivoice.eval.cloneval_benchmark:main"
+omnivoice-build-hf-manifests = "omnivoice.scripts.build_hf_manifests:main"
+omnivoice-orchestrate-tokenization = "omnivoice.scripts.orchestrate_tokenization:main"
+omnivoice-render-cloneval = "omnivoice.scripts.render_cloneval_report:main"
+omnivoice-runpod = "omnivoice.runpod.launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/k2-fsa/OmniVoice"

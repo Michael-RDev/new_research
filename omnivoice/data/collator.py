@@ -45,6 +45,12 @@ class PackingDataCollator:
         audio_mask = torch.cat(
             [s["audio_mask"] for s in processed_samples], dim=0
         )  # [Total_Len]
+        prompt_mask = torch.cat(
+            [s["prompt_mask"] for s in processed_samples], dim=0
+        )  # [Total_Len]
+        target_audio_mask = torch.cat(
+            [s["target_audio_mask"] for s in processed_samples], dim=0
+        )  # [Total_Len]
 
         position_ids = torch.cat(
             [torch.arange(s["length"], dtype=torch.long) for s in processed_samples],
@@ -64,6 +70,12 @@ class PackingDataCollator:
         audio_mask = torch.nn.functional.pad(
             audio_mask, pad=(0, pad_length), value=False
         )
+        prompt_mask = torch.nn.functional.pad(
+            prompt_mask, pad=(0, pad_length), value=False
+        )
+        target_audio_mask = torch.nn.functional.pad(
+            target_audio_mask, pad=(0, pad_length), value=False
+        )
 
         position_ids = torch.nn.functional.pad(
             position_ids, pad=(0, pad_length), value=0
@@ -73,6 +85,8 @@ class PackingDataCollator:
             "input_ids": input_ids.unsqueeze(0),  # [1, C, L]
             "labels": labels.unsqueeze(0),  # [1, C, L]
             "audio_mask": audio_mask.unsqueeze(0),  # [1, L]
+            "prompt_mask": prompt_mask.unsqueeze(0),  # [1, L]
+            "target_audio_mask": target_audio_mask.unsqueeze(0),  # [1, L]
             "position_ids": position_ids.unsqueeze(0),  # [1, L]
         }
 

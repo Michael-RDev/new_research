@@ -154,6 +154,11 @@ class OmniVoiceSampleProcessor:
             labels = audio_labels
             total_length = input_ids.shape[1]
             audio_mask = torch.ones(total_length, dtype=torch.bool)
+            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
+            if prompt_length > 0:
+                prompt_mask[:prompt_length] = True
+            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
+            target_audio_mask[prompt_length:] = True
         else:
             input_ids = torch.cat([style_inputs, text_inputs, audio_inputs], dim=1)
             labels = torch.cat([style_labels, text_labels, audio_labels], dim=1)
@@ -161,11 +166,17 @@ class OmniVoiceSampleProcessor:
             audio_start_idx = style_inputs.shape[1] + text_inputs.shape[1]
             audio_mask = torch.zeros(total_length, dtype=torch.bool)
             audio_mask[audio_start_idx:] = True
+            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
+            prompt_mask[audio_start_idx : audio_start_idx + prompt_length] = True
+            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
+            target_audio_mask[audio_start_idx + prompt_length :] = True
 
         return_dict = {
             "input_ids": input_ids,  # [C, L]
             "labels": labels,  # [C, L]
             "audio_mask": audio_mask,  # [L]
+            "prompt_mask": prompt_mask,  # [L]
+            "target_audio_mask": target_audio_mask,  # [L]
             "length": total_length,
         }
 
@@ -240,6 +251,11 @@ class OmniVoiceSimpleSampleProcessor:
             labels = audio_labels
             total_length = input_ids.shape[1]
             audio_mask = torch.ones(total_length, dtype=torch.bool)
+            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
+            if prompt_length > 0:
+                prompt_mask[:prompt_length] = True
+            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
+            target_audio_mask[prompt_length:] = True
         else:
             input_ids = torch.cat([text_inputs, audio_inputs], dim=1)
             labels = torch.cat([text_labels, audio_labels], dim=1)
@@ -247,11 +263,17 @@ class OmniVoiceSimpleSampleProcessor:
             audio_start_idx = text_inputs.shape[1]
             audio_mask = torch.zeros(total_length, dtype=torch.bool)
             audio_mask[audio_start_idx:] = True
+            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
+            prompt_mask[audio_start_idx : audio_start_idx + prompt_length] = True
+            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
+            target_audio_mask[audio_start_idx + prompt_length :] = True
 
         return_dict = {
             "input_ids": input_ids,  # [C, L]
             "labels": labels,  # [C, L]
             "audio_mask": audio_mask,  # [L]
+            "prompt_mask": prompt_mask,  # [L]
+            "target_audio_mask": target_audio_mask,  # [L]
             "length": total_length,
         }
 
