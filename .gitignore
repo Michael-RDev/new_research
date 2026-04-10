@@ -42,7 +42,5 @@ artifacts/
 **/tensorboard/
 **/wandb/
 
-# Nested external repos / submodule-style directories
-OmniVoice/
+# Nested external repos that should stay local-only
 cloneval/
-cli/

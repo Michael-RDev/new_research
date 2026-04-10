@@ -1,0 +1,4 @@
+[submodule "OmniVoice"]
+	path = OmniVoice
+	url = https://github.com/Michael-RDev/new_research.git
+	branch = omnivoice-submodule
