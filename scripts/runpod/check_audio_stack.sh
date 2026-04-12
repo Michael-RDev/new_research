@@ -23,7 +23,8 @@ fi
 echo "ffmpeg: $(ffmpeg -version | head -n 1)"
 echo "ffprobe: $(ffprobe -version | head -n 1)"
 
-mapfile -t audio_lib_dirs < <("${PYTHON_BIN}" - <<'PY'
+mapfile -t audio_lib_dirs < <(
+  "${PYTHON_BIN}" - <<'PY'
 import site
 from pathlib import Path
 
@@ -55,7 +56,10 @@ PY
 )
 
 if [ "${#audio_lib_dirs[@]}" -gt 0 ]; then
-  audio_ld_path="$(IFS=:; echo "${audio_lib_dirs[*]}")"
+  audio_ld_path="$(
+    IFS=:
+    echo "${audio_lib_dirs[*]}"
+  )"
   export LD_LIBRARY_PATH="${audio_ld_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   echo "LD_LIBRARY_PATH augmented with Python CUDA/audio libs"
 fi
@@ -81,11 +85,7 @@ def check_torchcodec():
     try:
         module = importlib.import_module("torchcodec")
         version = getattr(module, "__version__", "unknown")
-        from torchcodec._internally_replaced_utils import (
-            load_torchcodec_shared_libraries,
-        )
-
-        load_torchcodec_shared_libraries()
+        from torchcodec.decoders import AudioDecoder  # noqa: F401
         print(f"torchcodec: OK ({version})")
         return True
     except Exception as exc:

@@ -17,10 +17,10 @@ CLONEVAL_REPO_URL="${CLONEVAL_REPO_URL:-https://github.com/amu-cai/cloneval.git}
 CLONEVAL_REPO_BRANCH="${CLONEVAL_REPO_BRANCH:-main}"
 CLONEVAL_DIR="${CLONEVAL_DIR:-${WORKSPACE}/cloneval}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-RUNPOD_TORCH_VERSION="${RUNPOD_TORCH_VERSION:-2.5.1}"
-RUNPOD_TORCHAUDIO_VERSION="${RUNPOD_TORCHAUDIO_VERSION:-2.5.1}"
-RUNPOD_TORCHVISION_VERSION="${RUNPOD_TORCHVISION_VERSION:-0.20.1}"
-RUNPOD_TORCHCODEC_SPEC="${RUNPOD_TORCHCODEC_SPEC:-torchcodec>=0.1,<0.2}"
+RUNPOD_TORCH_VERSION="${RUNPOD_TORCH_VERSION:-2.6.0}"
+RUNPOD_TORCHAUDIO_VERSION="${RUNPOD_TORCHAUDIO_VERSION:-2.6.0}"
+RUNPOD_TORCHVISION_VERSION="${RUNPOD_TORCHVISION_VERSION:-0.21.0}"
+RUNPOD_TORCHCODEC_SPEC="${RUNPOD_TORCHCODEC_SPEC:-torchcodec==0.2.1}"
 RUNPOD_DATASETS_VERSION="${RUNPOD_DATASETS_VERSION:-3.6.0}"
 
 mkdir -p "${WORKSPACE}"
@@ -74,7 +74,9 @@ python -m pip install \
   "torchaudio==${RUNPOD_TORCHAUDIO_VERSION}" \
   "torchvision==${RUNPOD_TORCHVISION_VERSION}" \
   --extra-index-url https://download.pytorch.org/whl/cu124
-python -m pip install "${RUNPOD_TORCHCODEC_SPEC}"
+python -m pip install \
+  "${RUNPOD_TORCHCODEC_SPEC}" \
+  --index-url https://download.pytorch.org/whl/cu124
 python -m pip install -e ".[audio,training,dev]"
 python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
 python -m pip install -U "huggingface_hub[cli]"
