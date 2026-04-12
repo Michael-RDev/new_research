@@ -1832,10 +1832,10 @@ index 8ce5583..cbb0584 100644
  
 diff --git a/omnivoice/data/manifest_builder.py b/omnivoice/data/manifest_builder.py
 new file mode 100644
-index 0000000..baf427a
+index 0000000..a9e9f4b
 --- /dev/null
 +++ b/omnivoice/data/manifest_builder.py
-@@ -0,0 +1,926 @@
+@@ -0,0 +1,942 @@
 +#!/usr/bin/env python3
 +# Copyright    2026  Xiaomi Corp.
 +#
@@ -2046,10 +2046,12 @@ index 0000000..baf427a
 +
 +def _stage1_recipes(profile: str) -> list[CorpusRecipe]:
 +    smoke = profile == "smoke"
-+    waxal_records = 32 if smoke else None
-+    peoples_records = 48 if smoke else None
-+    emilia_records = 64 if smoke else None
-+    mls_records = 32 if smoke else None
++    waxal_records = 2 if smoke else None
++    waxal_dev_records = 1 if smoke else None
++    peoples_records = 8 if smoke else None
++    emilia_records = 4 if smoke else None
++    mls_records = 2 if smoke else None
++    mls_dev_records = 1 if smoke else None
 +
 +    recipes = [
 +        CorpusRecipe(
@@ -2061,11 +2063,11 @@ index 0000000..baf427a
 +            role="mixed",
 +            output_stem="emilia",
 +            requires_hf_token=True,
-+            max_hours_total=12.0 if smoke else 600.0,
-+            max_hours_per_language=2.0 if smoke else 100.0,
++            max_hours_total=1.0 if smoke else 600.0,
++            max_hours_per_language=0.2 if smoke else 100.0,
 +            max_records=emilia_records,
 +            hash_dev_ratio=0.01,
-+            min_dev_examples_per_language=4 if smoke else 32,
++            min_dev_examples_per_language=1 if smoke else 32,
 +            notes="Stage-1 core multilingual Emilia stream.",
 +        ),
 +        CorpusRecipe(
@@ -2078,10 +2080,10 @@ index 0000000..baf427a
 +            role="mixed",
 +            output_stem="peoples_speech_clean",
 +            language_id="en",
-+            max_hours_total=2.0 if smoke else 150.0,
++            max_hours_total=0.25 if smoke else 150.0,
 +            max_records=peoples_records,
 +            hash_dev_ratio=0.01,
-+            min_dev_examples_per_language=8 if smoke else 64,
++            min_dev_examples_per_language=2 if smoke else 64,
 +            notes="People's Speech clean split only.",
 +        ),
 +        CorpusRecipe(
@@ -2094,10 +2096,10 @@ index 0000000..baf427a
 +            role="mixed",
 +            output_stem="peoples_speech_clean_sa",
 +            language_id="en",
-+            max_hours_total=2.0 if smoke else 150.0,
++            max_hours_total=0.25 if smoke else 150.0,
 +            max_records=peoples_records,
 +            hash_dev_ratio=0.01,
-+            min_dev_examples_per_language=8 if smoke else 64,
++            min_dev_examples_per_language=2 if smoke else 64,
 +            notes="People's Speech CC-BY-SA clean split only.",
 +        ),
 +    ]
@@ -2114,7 +2116,7 @@ index 0000000..baf427a
 +                role="train",
 +                output_stem=f"mls_{language_id}_train",
 +                language_id=language_id,
-+                max_hours_total=1.0 if smoke else 50.0,
++                max_hours_total=0.1 if smoke else 50.0,
 +                max_records=mls_records,
 +                repeat_hint=2,
 +                notes=f"MLS {config_name} train split.",
@@ -2131,7 +2133,7 @@ index 0000000..baf427a
 +                role="dev",
 +                output_stem=f"mls_{language_id}_dev",
 +                language_id=language_id,
-+                max_records=8 if smoke else None,
++                max_records=mls_dev_records,
 +                repeat_hint=1,
 +                notes=f"MLS {config_name} dev split.",
 +            )
@@ -2149,7 +2151,7 @@ index 0000000..baf427a
 +                role="train",
 +                output_stem=f"waxal_{language_id}_train",
 +                language_id=language_id,
-+                max_hours_total=0.5 if smoke else 25.0,
++                max_hours_total=0.1 if smoke else 25.0,
 +                max_records=waxal_records,
 +                repeat_hint=4,
 +                notes=f"Waxal supervised train subsets for {language_id}.",
@@ -2166,7 +2168,7 @@ index 0000000..baf427a
 +                role="dev",
 +                output_stem=f"waxal_{language_id}_dev",
 +                language_id=language_id,
-+                max_records=8 if smoke else None,
++                max_records=waxal_dev_records,
 +                repeat_hint=1,
 +                notes=f"Waxal supervised validation subsets for {language_id}.",
 +            )
@@ -2638,8 +2640,22 @@ index 0000000..baf427a
 +    train_records_by_lang: dict[str, int] = defaultdict(int)
 +    dev_records_by_lang: dict[str, int] = defaultdict(int)
 +    seen_source_ids: set[str] = set()
++    target_dev_records = max(1, recipe.min_dev_examples_per_language)
 +
-+    for sample in dataset:
++    dataset_iter = iter(dataset)
++    while True:
++        if recipe.max_records is not None and all(
++            train_records_by_lang[language_id] >= recipe.max_records
++            and dev_records_by_lang[language_id] >= target_dev_records
++            for language_id in STAGE1_EMILIA_LANGUAGES
++        ):
++            break
++
++        try:
++            sample = next(dataset_iter)
++        except StopIteration:
++            break
++
 +        meta = _coerce_json_metadata(sample)
 +        text = _extract_text(sample, meta)
 +        if not text:
@@ -2686,7 +2702,7 @@ index 0000000..baf427a
 +            if recipe.max_records is not None and train_records_by_lang[language_id] >= recipe.max_records:
 +                audio_path.unlink(missing_ok=True)
 +                continue
-+        elif recipe.max_records is not None and dev_records_by_lang[language_id] >= max(4, recipe.max_records // 4):
++        elif recipe.max_records is not None and dev_records_by_lang[language_id] >= target_dev_records:
 +            audio_path.unlink(missing_ok=True)
 +            continue
 +
@@ -5897,6 +5913,60 @@ index ecae725..06ff057 100644
          valid_keys = cls.__annotations__.keys()
          filtered_dict = {k: v for k, v in cfg_dict.items() if k in valid_keys}
          instance = cls(**filtered_dict)
+diff --git a/omnivoice/utils/audio.py b/omnivoice/utils/audio.py
+index 9fcb2c2..84da7cc 100644
+--- a/omnivoice/utils/audio.py
++++ b/omnivoice/utils/audio.py
+@@ -23,6 +23,7 @@ inference post-processing.
+ """
+ 
+ import numpy as np
++import soundfile as sf
+ import torch
+ import torchaudio
+ from pydub import AudioSegment
+@@ -42,18 +43,30 @@ def load_audio(audio_path: str, sampling_rate: int):
+         PyTorch tensor of shape (1, T)
+     """
+     try:
+-        waveform, prompt_sampling_rate = torchaudio.load(
+-            audio_path, backend="soundfile"
++        audio_data, prompt_sampling_rate = sf.read(
++            audio_path,
++            dtype="float32",
++            always_2d=True,
+         )
+-    except (RuntimeError, OSError):
+-        # Fallback via pydub+ffmpeg for formats torchaudio can't handle
+-        aseg = AudioSegment.from_file(audio_path)
+-        audio_data = np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
+-        if aseg.channels == 1:
+-            waveform = torch.from_numpy(audio_data).unsqueeze(0)
+-        else:
+-            waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
+-        prompt_sampling_rate = aseg.frame_rate
++        waveform = torch.from_numpy(audio_data.T)
++    except (RuntimeError, OSError, ValueError):
++        try:
++            waveform, prompt_sampling_rate = torchaudio.load(
++                audio_path, backend="soundfile"
++            )
++        except (ImportError, ModuleNotFoundError, RuntimeError, OSError, ValueError):
++            # Last-resort fallback via pydub+ffmpeg for formats unsupported by
++            # soundfile or environments where torchaudio routes through
++            # TorchCodec and fails to initialize.
++            aseg = AudioSegment.from_file(audio_path)
++            audio_data = (
++                np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
++            )
++            if aseg.channels == 1:
++                waveform = torch.from_numpy(audio_data).unsqueeze(0)
++            else:
++                waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
++            prompt_sampling_rate = aseg.frame_rate
+ 
+     if prompt_sampling_rate != sampling_rate:
+         waveform = torchaudio.functional.resample(
 diff --git a/omnivoice/utils/env.py b/omnivoice/utils/env.py
 new file mode 100644
 index 0000000..4291811
@@ -6259,10 +6329,10 @@ index 0000000..b794376
 +    assert args.eval_model_dir == "download/tts_eval_models"
 diff --git a/tests/test_manifest_builder.py b/tests/test_manifest_builder.py
 new file mode 100644
-index 0000000..b73f44a
+index 0000000..33c0fbd
 --- /dev/null
 +++ b/tests/test_manifest_builder.py
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,193 @@
 +import json
 +from pathlib import Path
 +
@@ -6409,6 +6479,53 @@ index 0000000..b73f44a
 +    assert (manifest_root / "emilia_de_train.jsonl").exists()
 +    assert (manifest_root / "emilia_en_dev.jsonl").exists()
 +    assert not (manifest_root / "emilia_en_train.jsonl").exists()
++
++
++def test_emilia_recipe_stops_after_smoke_targets_are_met(tmp_path, monkeypatch):
++    recipe = mb.CorpusRecipe(
++        name="emilia",
++        stage="stage1",
++        kind="hf_emilia",
++        dataset_id="amphion/Emilia-Dataset",
++        split_name="train",
++        role="mixed",
++        output_stem="emilia",
++        max_hours_total=10.0,
++        max_hours_per_language=10.0,
++        max_records=1,
++        hash_dev_ratio=0.0,
++        min_dev_examples_per_language=1,
++    )
++
++    def _rows(dataset_id, config_name, split_name, hf_token, streaming=True):
++        for language in mb.STAGE1_EMILIA_LANGUAGES:
++            yield {
++                "json": {
++                    "id": f"{language}-dev",
++                    "text": f"{language} dev",
++                    "language": language,
++                },
++                "audio": {"array": np.zeros(32000), "sampling_rate": 16000},
++            }
++            yield {
++                "json": {
++                    "id": f"{language}-train",
++                    "text": f"{language} train",
++                    "language": language,
++                },
++                "audio": {"array": np.zeros(32000), "sampling_rate": 16000},
++            }
++        raise AssertionError("emilia iterator should stop once per-language quotas are met")
++
++    monkeypatch.setattr(mb, "_iter_hf_rows", _rows)
++
++    manifest_root = tmp_path / "manifests"
++    audio_root = tmp_path / "audio"
++    mb.build_hf_manifests([recipe], str(manifest_root), str(audio_root))
++
++    for language in mb.STAGE1_EMILIA_LANGUAGES:
++        assert (manifest_root / f"emilia_{language}_dev.jsonl").exists()
++        assert (manifest_root / f"emilia_{language}_train.jsonl").exists()
 diff --git a/tests/test_orchestrate_tokenization.py b/tests/test_orchestrate_tokenization.py
 new file mode 100644
 index 0000000..04b4df4
@@ -6526,57 +6643,3 @@ index 0000000..5703405
 +    assert payload["size"] == 2048
 +    assert payload["dataCenterId"] == "US-KS-2"
 +
-diff --git a/omnivoice/utils/audio.py b/omnivoice/utils/audio.py
-index 9fcb2c2..84da7cc 100644
---- a/omnivoice/utils/audio.py
-+++ b/omnivoice/utils/audio.py
-@@ -23,6 +23,7 @@ inference post-processing.
- """
- 
- import numpy as np
-+import soundfile as sf
- import torch
- import torchaudio
- from pydub import AudioSegment
-@@ -42,18 +43,30 @@ def load_audio(audio_path: str, sampling_rate: int):
-         PyTorch tensor of shape (1, T)
-     """
-     try:
--        waveform, prompt_sampling_rate = torchaudio.load(
--            audio_path, backend="soundfile"
-+        audio_data, prompt_sampling_rate = sf.read(
-+            audio_path,
-+            dtype="float32",
-+            always_2d=True,
-         )
--    except (RuntimeError, OSError):
--        # Fallback via pydub+ffmpeg for formats torchaudio can't handle
--        aseg = AudioSegment.from_file(audio_path)
--        audio_data = np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
--        if aseg.channels == 1:
--            waveform = torch.from_numpy(audio_data).unsqueeze(0)
--        else:
--            waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
--        prompt_sampling_rate = aseg.frame_rate
-+        waveform = torch.from_numpy(audio_data.T)
-+    except (RuntimeError, OSError, ValueError):
-+        try:
-+            waveform, prompt_sampling_rate = torchaudio.load(
-+                audio_path, backend="soundfile"
-+            )
-+        except (ImportError, ModuleNotFoundError, RuntimeError, OSError, ValueError):
-+            # Last-resort fallback via pydub+ffmpeg for formats unsupported by
-+            # soundfile or environments where torchaudio routes through
-+            # TorchCodec and fails to initialize.
-+            aseg = AudioSegment.from_file(audio_path)
-+            audio_data = (
-+                np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
-+            )
-+            if aseg.channels == 1:
-+                waveform = torch.from_numpy(audio_data).unsqueeze(0)
-+            else:
-+                waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
-+            prompt_sampling_rate = aseg.frame_rate
- 
-     if prompt_sampling_rate != sampling_rate:
-         waveform = torchaudio.functional.resample(
