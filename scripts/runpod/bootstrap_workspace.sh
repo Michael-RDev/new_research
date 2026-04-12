@@ -12,6 +12,7 @@ OMNIVOICE_REPO_BRANCH="${OMNIVOICE_REPO_BRANCH:-master}"
 OMNIVOICE_DIR="${OMNIVOICE_DIR:-${ROOT_REPO_DIR}/OmniVoice}"
 OMNIVOICE_BASE_COMMIT_FILE="${OMNIVOICE_BASE_COMMIT_FILE:-${ROOT_REPO_DIR}/patches/omnivoice-base-commit.txt}"
 OMNIVOICE_PATCH_FILE="${OMNIVOICE_PATCH_FILE:-${ROOT_REPO_DIR}/patches/omnivoice-local.patch}"
+FORCE_OMNIVOICE_RECLONE="${FORCE_OMNIVOICE_RECLONE:-0}"
 CLONEVAL_REPO_URL="${CLONEVAL_REPO_URL:-https://github.com/amu-cai/cloneval.git}"
 CLONEVAL_REPO_BRANCH="${CLONEVAL_REPO_BRANCH:-main}"
 CLONEVAL_DIR="${CLONEVAL_DIR:-${WORKSPACE}/cloneval}"
@@ -25,6 +26,10 @@ if [ ! -d "${ROOT_REPO_DIR}/.git" ]; then
     exit 1
   fi
   git clone --branch "${ROOT_REPO_BRANCH}" "${ROOT_REPO_URL}" "${ROOT_REPO_DIR}"
+fi
+
+if [ "${FORCE_OMNIVOICE_RECLONE}" = "1" ] && [ -d "${OMNIVOICE_DIR}" ]; then
+  rm -rf "${OMNIVOICE_DIR}"
 fi
 
 if [ ! -d "${OMNIVOICE_DIR}/.git" ]; then
