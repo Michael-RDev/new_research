@@ -20,6 +20,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNPOD_TORCH_VERSION="${RUNPOD_TORCH_VERSION:-2.5.1}"
 RUNPOD_TORCHAUDIO_VERSION="${RUNPOD_TORCHAUDIO_VERSION:-2.5.1}"
 RUNPOD_TORCHVISION_VERSION="${RUNPOD_TORCHVISION_VERSION:-0.20.1}"
+RUNPOD_TORCHCODEC_SPEC="${RUNPOD_TORCHCODEC_SPEC:-torchcodec>=0.1,<0.2}"
 RUNPOD_DATASETS_VERSION="${RUNPOD_DATASETS_VERSION:-3.6.0}"
 
 mkdir -p "${WORKSPACE}"
@@ -58,6 +59,11 @@ fi
 
 cd "${ROOT_REPO_DIR}"
 
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+fi
+
 ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 
@@ -67,6 +73,7 @@ python -m pip install \
   "torchaudio==${RUNPOD_TORCHAUDIO_VERSION}" \
   "torchvision==${RUNPOD_TORCHVISION_VERSION}" \
   --index-url https://download.pytorch.org/whl/cu124
+python -m pip install "${RUNPOD_TORCHCODEC_SPEC}" --index-url https://download.pytorch.org/whl/cu124
 python -m pip install -e ".[audio,training,dev]"
 python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
 python -m pip install -U "huggingface_hub[cli]"

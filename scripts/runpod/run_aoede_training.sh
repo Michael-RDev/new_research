@@ -39,6 +39,8 @@ cd "${ROOT_REPO_DIR}"
 source .venv/bin/activate
 export PYTHONPATH="${ROOT_REPO_DIR}:${OMNIVOICE_DIR}:${PYTHONPATH:-}"
 
+bash "${ROOT_REPO_DIR}/scripts/runpod/check_audio_stack.sh"
+
 if [ "${stage}" -le 0 ] && [ "${stop_stage}" -ge 0 ]; then
   echo "Stage 0: build ${profile} manifests"
   "${PYTHON_BIN}" -m omnivoice.scripts.build_hf_manifests \
