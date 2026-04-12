@@ -57,6 +57,23 @@ Default pod names:
 - `aoede-train`
 - `omnivoice-eval`
 
+If RunPod rejects network volume creation because the account balance is below
+their minimum threshold, create two independent pods instead:
+
+```bash
+PYTHONPATH=/Users/michael/Desktop/new_research \
+/Users/michael/Desktop/new_research/.venv_arm64/bin/python \
+-m aoede.runpod.dual_pod_launcher create \
+  --env_file /path/to/.env \
+  --root_repo_url https://github.com/<you>/new_research.git \
+  --root_repo_branch <your-branch> \
+  --skip_network_volume \
+  --pod_volume_gb 200
+```
+
+This keeps the training and evaluation pods separate, so checkpoints and logs do
+not automatically appear on the other pod.
+
 ## Connect to the pods
 
 Use RunPod’s **Connect** tab and SSH into each pod. Official docs:

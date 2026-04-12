@@ -24,6 +24,7 @@ def _shared_config() -> SharedWorkspaceConfig:
         network_volume_name="aoede-omnivoice-shared",
         network_volume_size_gb=2048,
         container_disk_gb=80,
+        pod_volume_gb=200,
         vcpu_count=16,
         memory_in_gb=125,
         support_public_ip=True,
@@ -50,6 +51,18 @@ def test_pod_payload_includes_shared_workspace_env():
     assert payload["env"]["OMNIVOICE_REPO_URL"] == "https://github.com/example/OmniVoice.git"
     assert payload["env"]["HF_TOKEN"] == "hf_secret"
     assert payload["ports"] == ["22/tcp", "8888/http"]
+    assert payload["networkVolumeId"] == "vol_123"
+
+
+def test_pod_payload_uses_local_volume_when_network_volume_is_disabled():
+    shared = _shared_config()
+    payload = _pod_payload(
+        shared,
+        PodLaunchConfig(name="aoede-train", gpu_type_id="NVIDIA A100 80GB PCIe"),
+        network_volume_id=None,
+    )
+    assert "networkVolumeId" not in payload
+    assert payload["volumeInGb"] == 200
 
 
 def test_network_volume_payload_matches_shared_config():

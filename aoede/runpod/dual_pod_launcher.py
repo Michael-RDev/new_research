@@ -45,6 +45,7 @@ class SharedWorkspaceConfig:
     network_volume_name: str
     network_volume_size_gb: int
     container_disk_gb: int
+    pod_volume_gb: int
     vcpu_count: int
     memory_in_gb: int
     support_public_ip: bool
@@ -136,7 +137,7 @@ def _bootstrap_command(config: SharedWorkspaceConfig) -> str:
 def _pod_payload(
     shared: SharedWorkspaceConfig,
     pod: PodLaunchConfig,
-    network_volume_id: str,
+    network_volume_id: Optional[str],
 ) -> dict[str, Any]:
     ports = ["22/tcp"]
     if pod.expose_jupyter:
@@ -155,7 +156,7 @@ def _pod_payload(
     if shared.hf_token:
         env["HF_TOKEN"] = shared.hf_token
 
-    return {
+    payload = {
         "cloudType": "SECURE",
         "computeType": "GPU",
         "containerDiskInGb": shared.container_disk_gb,
@@ -167,12 +168,16 @@ def _pod_payload(
         "imageName": shared.image_name,
         "memoryInGb": shared.memory_in_gb,
         "name": pod.name,
-        "networkVolumeId": network_volume_id,
         "ports": ports,
         "supportPublicIp": shared.support_public_ip,
         "vcpuCount": shared.vcpu_count,
         "volumeMountPath": shared.workspace_mount,
     }
+    if network_volume_id:
+        payload["networkVolumeId"] = network_volume_id
+    else:
+        payload["volumeInGb"] = shared.pod_volume_gb
+    return payload
 
 
 def _network_volume_payload(shared: SharedWorkspaceConfig) -> dict[str, Any]:
@@ -235,9 +240,11 @@ def _add_shared_args(parser: argparse.ArgumentParser):
     parser.add_argument("--network_volume_name", type=str, default="aoede-omnivoice-shared")
     parser.add_argument("--network_volume_size_gb", type=int, default=2048)
     parser.add_argument("--container_disk_gb", type=int, default=80)
+    parser.add_argument("--pod_volume_gb", type=int, default=200)
     parser.add_argument("--vcpu_count", type=int, default=16)
     parser.add_argument("--memory_in_gb", type=int, default=125)
     parser.add_argument("--disable_public_ip", action="store_true")
+    parser.add_argument("--skip_network_volume", action="store_true")
 
 
 def _add_pod_args(parser: argparse.ArgumentParser):
@@ -267,6 +274,7 @@ def _build_shared_config(args, env_values: dict[str, str]) -> SharedWorkspaceCon
         network_volume_name=args.network_volume_name,
         network_volume_size_gb=args.network_volume_size_gb,
         container_disk_gb=args.container_disk_gb,
+        pod_volume_gb=args.pod_volume_gb,
         vcpu_count=args.vcpu_count,
         memory_in_gb=args.memory_in_gb,
         support_public_ip=not args.disable_public_ip,
@@ -321,13 +329,14 @@ def main() -> None:
         shared = _build_shared_config(args, env_values)
         train_pod, eval_pod = _build_pod_configs(args)
         volume_payload = _network_volume_payload(shared)
-        train_payload = _pod_payload(shared, train_pod, network_volume_id="<create-me>")
-        eval_payload = _pod_payload(shared, eval_pod, network_volume_id="<create-me>")
+        planned_network_volume_id = None if args.skip_network_volume else "<create-me>"
+        train_payload = _pod_payload(shared, train_pod, network_volume_id=planned_network_volume_id)
+        eval_payload = _pod_payload(shared, eval_pod, network_volume_id=planned_network_volume_id)
         if args.dry_run:
             _print_json(
                 {
                     "shared_workspace": asdict(shared),
-                    "network_volume_payload": volume_payload,
+                    "network_volume_payload": None if args.skip_network_volume else volume_payload,
                     "train_pod_payload": train_payload,
                     "eval_pod_payload": eval_payload,
                 }
@@ -342,14 +351,24 @@ def main() -> None:
     client = RunpodClient(api_key=api_key)
 
     if args.command == "create":
-        existing_volume = _find_volume_by_name(
-            client.list_network_volumes(),
-            name=shared.network_volume_name,
-            data_center_id=shared.data_center_id,
+        network_volume = None
+        if not args.skip_network_volume:
+            existing_volume = _find_volume_by_name(
+                client.list_network_volumes(),
+                name=shared.network_volume_name,
+                data_center_id=shared.data_center_id,
+            )
+            network_volume = existing_volume or client.create_network_volume(volume_payload)
+        train_payload = _pod_payload(
+            shared,
+            train_pod,
+            network_volume_id=None if network_volume is None else network_volume["id"],
         )
-        network_volume = existing_volume or client.create_network_volume(volume_payload)
-        train_payload = _pod_payload(shared, train_pod, network_volume_id=network_volume["id"])
-        eval_payload = _pod_payload(shared, eval_pod, network_volume_id=network_volume["id"])
+        eval_payload = _pod_payload(
+            shared,
+            eval_pod,
+            network_volume_id=None if network_volume is None else network_volume["id"],
+        )
         created_train = client.create_pod(train_payload)
         created_eval = client.create_pod(eval_payload)
         _print_json(
