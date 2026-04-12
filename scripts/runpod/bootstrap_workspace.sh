@@ -64,16 +64,17 @@ if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; 
   DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
 fi
 
+rm -rf .venv
 ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 
-python -m pip install --upgrade pip wheel
+python -m pip install --upgrade pip wheel setuptools
 python -m pip install \
   "torch==${RUNPOD_TORCH_VERSION}" \
   "torchaudio==${RUNPOD_TORCHAUDIO_VERSION}" \
   "torchvision==${RUNPOD_TORCHVISION_VERSION}" \
-  --index-url https://download.pytorch.org/whl/cu124
-python -m pip install "${RUNPOD_TORCHCODEC_SPEC}" --index-url https://download.pytorch.org/whl/cu124
+  --extra-index-url https://download.pytorch.org/whl/cu124
+python -m pip install "${RUNPOD_TORCHCODEC_SPEC}"
 python -m pip install -e ".[audio,training,dev]"
 python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
 python -m pip install -U "huggingface_hub[cli]"

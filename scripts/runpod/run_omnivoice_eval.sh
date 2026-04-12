@@ -23,7 +23,7 @@ cd "${OMNIVOICE_DIR}"
 source "${ROOT_REPO_DIR}/.venv/bin/activate"
 export PYTHONPATH="${ROOT_REPO_DIR}:${OMNIVOICE_DIR}:${PYTHONPATH:-}"
 
-bash "${ROOT_REPO_DIR}/scripts/runpod/check_audio_stack.sh"
+source "${ROOT_REPO_DIR}/scripts/runpod/check_audio_stack.sh"
 
 get_test_list() {
   case "$1" in

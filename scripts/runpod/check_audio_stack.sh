@@ -23,6 +23,43 @@ fi
 echo "ffmpeg: $(ffmpeg -version | head -n 1)"
 echo "ffprobe: $(ffprobe -version | head -n 1)"
 
+mapfile -t audio_lib_dirs < <("${PYTHON_BIN}" - <<'PY'
+import site
+from pathlib import Path
+
+roots = []
+for candidate in site.getsitepackages():
+    p = Path(candidate)
+    if p.exists():
+        roots.append(p)
+
+seen = set()
+for root in roots:
+    for rel in ("torch/lib",):
+        path = root / rel
+        if path.exists():
+            resolved = str(path.resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                print(resolved)
+    nvidia_root = root / "nvidia"
+    if nvidia_root.exists():
+        for child in sorted(nvidia_root.iterdir()):
+            lib_dir = child / "lib"
+            if lib_dir.exists():
+                resolved = str(lib_dir.resolve())
+                if resolved not in seen:
+                    seen.add(resolved)
+                    print(resolved)
+PY
+)
+
+if [ "${#audio_lib_dirs[@]}" -gt 0 ]; then
+  audio_ld_path="$(IFS=:; echo "${audio_lib_dirs[*]}")"
+  export LD_LIBRARY_PATH="${audio_ld_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  echo "LD_LIBRARY_PATH augmented with Python CUDA/audio libs"
+fi
+
 "${PYTHON_BIN}" - <<'PY'
 import importlib
 import os
