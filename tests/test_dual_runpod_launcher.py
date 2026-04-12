@@ -51,7 +51,8 @@ def test_pod_payload_includes_shared_workspace_env():
     assert payload["env"]["OMNIVOICE_REPO_URL"] == "https://github.com/example/OmniVoice.git"
     assert payload["env"]["HF_TOKEN"] == "hf_secret"
     assert payload["ports"] == ["22/tcp", "8888/http"]
-    assert payload["networkVolumeId"] == "vol_123"
+    assert payload["minRAMPerGPU"] == 125
+    assert payload["minVCPUPerGPU"] == 16
 
 
 def test_pod_payload_uses_local_volume_when_network_volume_is_disabled():

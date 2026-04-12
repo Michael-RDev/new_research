@@ -166,11 +166,11 @@ def _pod_payload(
         "gpuCount": 1,
         "gpuTypeIds": [pod.gpu_type_id],
         "imageName": shared.image_name,
-        "memoryInGb": shared.memory_in_gb,
+        "minRAMPerGPU": shared.memory_in_gb,
+        "minVCPUPerGPU": shared.vcpu_count,
         "name": pod.name,
         "ports": ports,
         "supportPublicIp": shared.support_public_ip,
-        "vcpuCount": shared.vcpu_count,
         "volumeMountPath": shared.workspace_mount,
     }
     if network_volume_id:
