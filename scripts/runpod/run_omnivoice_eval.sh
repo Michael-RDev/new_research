@@ -19,8 +19,8 @@ results_root="${WORKSPACE}/exp/omnivoice_eval"
 TTS_EVAL_MODEL_DIR="${download_dir}/tts_eval_models"
 TTS_EVAL_DATA_DIR="${download_dir}/tts_eval_datasets"
 
-cd "${ROOT_REPO_DIR}"
-source .venv/bin/activate
+cd "${OMNIVOICE_DIR}"
+source "${ROOT_REPO_DIR}/.venv/bin/activate"
 export PYTHONPATH="${ROOT_REPO_DIR}:${OMNIVOICE_DIR}:${PYTHONPATH:-}"
 
 get_test_list() {

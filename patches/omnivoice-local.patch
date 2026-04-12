@@ -6526,3 +6526,57 @@ index 0000000..5703405
 +    assert payload["size"] == 2048
 +    assert payload["dataCenterId"] == "US-KS-2"
 +
+diff --git a/omnivoice/utils/audio.py b/omnivoice/utils/audio.py
+index 9fcb2c2..84da7cc 100644
+--- a/omnivoice/utils/audio.py
++++ b/omnivoice/utils/audio.py
+@@ -23,6 +23,7 @@ inference post-processing.
+ """
+ 
+ import numpy as np
++import soundfile as sf
+ import torch
+ import torchaudio
+ from pydub import AudioSegment
+@@ -42,18 +43,30 @@ def load_audio(audio_path: str, sampling_rate: int):
+         PyTorch tensor of shape (1, T)
+     """
+     try:
+-        waveform, prompt_sampling_rate = torchaudio.load(
+-            audio_path, backend="soundfile"
++        audio_data, prompt_sampling_rate = sf.read(
++            audio_path,
++            dtype="float32",
++            always_2d=True,
+         )
+-    except (RuntimeError, OSError):
+-        # Fallback via pydub+ffmpeg for formats torchaudio can't handle
+-        aseg = AudioSegment.from_file(audio_path)
+-        audio_data = np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
+-        if aseg.channels == 1:
+-            waveform = torch.from_numpy(audio_data).unsqueeze(0)
+-        else:
+-            waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
+-        prompt_sampling_rate = aseg.frame_rate
++        waveform = torch.from_numpy(audio_data.T)
++    except (RuntimeError, OSError, ValueError):
++        try:
++            waveform, prompt_sampling_rate = torchaudio.load(
++                audio_path, backend="soundfile"
++            )
++        except (ImportError, ModuleNotFoundError, RuntimeError, OSError, ValueError):
++            # Last-resort fallback via pydub+ffmpeg for formats unsupported by
++            # soundfile or environments where torchaudio routes through
++            # TorchCodec and fails to initialize.
++            aseg = AudioSegment.from_file(audio_path)
++            audio_data = (
++                np.array(aseg.get_array_of_samples()).astype(np.float32) / 32768.0
++            )
++            if aseg.channels == 1:
++                waveform = torch.from_numpy(audio_data).unsqueeze(0)
++            else:
++                waveform = torch.from_numpy(audio_data.reshape(-1, aseg.channels).T)
++            prompt_sampling_rate = aseg.frame_rate
+ 
+     if prompt_sampling_rate != sampling_rate:
+         waveform = torchaudio.functional.resample(
