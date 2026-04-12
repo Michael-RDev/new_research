@@ -51,7 +51,7 @@ if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
     seedtts_test_zh.jsonl \
     minimax_multilingual_24.jsonl \
     fleurs_multilingual_102.jsonl; do
-    huggingface-cli download \
+    hf download \
       --repo-type dataset \
       --local-dir "${TTS_EVAL_DATA_DIR}" \
       k2-fsa/TTS_eval_datasets \
@@ -63,7 +63,7 @@ if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
     seedtts_testset.tar.gz \
     minimax_multilingual_24.tar.gz \
     fleurs_multilingual_102.tar.gz; do
-    huggingface-cli download \
+    hf download \
       --repo-type dataset \
       --local-dir "${TTS_EVAL_DATA_DIR}" \
       k2-fsa/TTS_eval_datasets \
@@ -72,7 +72,7 @@ if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
   done
 
   mkdir -p "${TTS_EVAL_MODEL_DIR}"
-  huggingface-cli download \
+  hf download \
     --local-dir "${TTS_EVAL_MODEL_DIR}" \
     k2-fsa/TTS_eval_models
 fi
