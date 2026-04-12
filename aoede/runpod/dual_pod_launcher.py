@@ -92,7 +92,9 @@ class RunpodClient:
     def list_pods(self, name: Optional[str] = None):
         params = {"name": name} if name else None
         data = self._request("GET", "/pods", params=params)
-        return data.get("pods", data if isinstance(data, list) else [])
+        if isinstance(data, list):
+            return data
+        return data.get("pods", [])
 
     def get_pod(self, pod_id: str):
         return self._request("GET", f"/pods/{pod_id}")
@@ -108,7 +110,9 @@ class RunpodClient:
 
     def list_network_volumes(self):
         data = self._request("GET", "/networkvolumes")
-        return data.get("networkVolumes", data if isinstance(data, list) else [])
+        if isinstance(data, list):
+            return data
+        return data.get("networkVolumes", [])
 
     def create_network_volume(self, payload: dict[str, Any]):
         return self._request("POST", "/networkvolumes", payload=payload)

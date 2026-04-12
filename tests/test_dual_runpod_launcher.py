@@ -1,5 +1,6 @@
 from aoede.runpod.dual_pod_launcher import (
     PodLaunchConfig,
+    RunpodClient,
     SharedWorkspaceConfig,
     _bootstrap_command,
     _network_volume_payload,
@@ -59,3 +60,16 @@ def test_network_volume_payload_matches_shared_config():
         "size": 2048,
         "dataCenterId": "US-KS-2",
     }
+
+
+def test_client_accepts_top_level_list_responses(monkeypatch):
+    client = RunpodClient(api_key="rp_test")
+
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda method, path, payload=None, params=None: [{"id": "pod_123"}] if path == "/pods" else [{"id": "vol_123"}],
+    )
+
+    assert client.list_pods() == [{"id": "pod_123"}]
+    assert client.list_network_volumes() == [{"id": "vol_123"}]
