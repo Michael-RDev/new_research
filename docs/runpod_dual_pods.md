@@ -57,6 +57,9 @@ Default pod names:
 - `aoede-train`
 - `omnivoice-eval`
 
+For the widest scheduling search, add `--any_data_center`. For the lower-cost
+Community Cloud pricing tier, add `--cloud_type COMMUNITY`.
+
 If RunPod rejects network volume creation because the account balance is below
 their minimum threshold, create two independent pods instead:
 
@@ -67,6 +70,8 @@ PYTHONPATH=/Users/michael/Desktop/new_research \
   --env_file /path/to/.env \
   --root_repo_url https://github.com/<you>/new_research.git \
   --root_repo_branch <your-branch> \
+  --any_data_center \
+  --cloud_type COMMUNITY \
   --skip_network_volume \
   --pod_volume_gb 200
 ```

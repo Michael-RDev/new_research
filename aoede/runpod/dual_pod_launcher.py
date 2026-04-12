@@ -41,7 +41,8 @@ class SharedWorkspaceConfig:
     cloneval_repo_branch: str
     bootstrap_script: str
     image_name: str
-    data_center_id: str
+    cloud_type: str
+    data_center_ids: tuple[str, ...]
     network_volume_name: str
     network_volume_size_gb: int
     container_disk_gb: int
@@ -130,7 +131,9 @@ def _bootstrap_command(config: SharedWorkspaceConfig) -> str:
         f" mkdir -p {config.workspace_mount};"
         f" if [ ! -d {root_repo_path}/.git ]; then git clone --branch {config.root_repo_branch} {config.root_repo_url} {root_repo_path}; fi;"
         f" cd {root_repo_path};"
-        f" bash {config.bootstrap_script}"
+        f" bash {config.bootstrap_script};"
+        " echo 'RunPod workspace ready. Keeping container alive.';"
+        " exec sleep infinity"
     )
 
 
@@ -157,10 +160,9 @@ def _pod_payload(
         env["HF_TOKEN"] = shared.hf_token
 
     payload = {
-        "cloudType": "SECURE",
+        "cloudType": shared.cloud_type,
         "computeType": "GPU",
         "containerDiskInGb": shared.container_disk_gb,
-        "dataCenterIds": [shared.data_center_id],
         "dockerStartCmd": ["bash", "-lc", _bootstrap_command(shared)],
         "env": env,
         "gpuCount": 1,
@@ -173,6 +175,8 @@ def _pod_payload(
         "supportPublicIp": shared.support_public_ip,
         "volumeMountPath": shared.workspace_mount,
     }
+    if shared.data_center_ids:
+        payload["dataCenterIds"] = list(shared.data_center_ids)
     if network_volume_id:
         payload["networkVolumeId"] = network_volume_id
     else:
@@ -181,10 +185,12 @@ def _pod_payload(
 
 
 def _network_volume_payload(shared: SharedWorkspaceConfig) -> dict[str, Any]:
+    if not shared.data_center_ids:
+        raise ValueError("A specific data center is required when creating a network volume.")
     return {
         "name": shared.network_volume_name,
         "size": shared.network_volume_size_gb,
-        "dataCenterId": shared.data_center_id,
+        "dataCenterId": shared.data_center_ids[0],
     }
 
 
@@ -236,7 +242,9 @@ def _add_shared_args(parser: argparse.ArgumentParser):
         type=str,
         default="runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
     )
+    parser.add_argument("--cloud_type", type=str, default="SECURE", choices=["SECURE", "COMMUNITY"])
     parser.add_argument("--data_center_id", type=str, default="US-KS-2")
+    parser.add_argument("--any_data_center", action="store_true")
     parser.add_argument("--network_volume_name", type=str, default="aoede-omnivoice-shared")
     parser.add_argument("--network_volume_size_gb", type=int, default=2048)
     parser.add_argument("--container_disk_gb", type=int, default=80)
@@ -259,6 +267,7 @@ def _add_pod_args(parser: argparse.ArgumentParser):
 
 def _build_shared_config(args, env_values: dict[str, str]) -> SharedWorkspaceConfig:
     hf_token = env_values.get(args.hf_token_env) or os.environ.get(args.hf_token_env)
+    data_center_ids: tuple[str, ...] = () if args.any_data_center else (args.data_center_id,)
     return SharedWorkspaceConfig(
         workspace_mount=args.workspace_mount,
         root_repo_url=args.root_repo_url,
@@ -270,7 +279,8 @@ def _build_shared_config(args, env_values: dict[str, str]) -> SharedWorkspaceCon
         cloneval_repo_branch=args.cloneval_repo_branch,
         bootstrap_script=args.bootstrap_script,
         image_name=args.image_name,
-        data_center_id=args.data_center_id,
+        cloud_type=args.cloud_type,
+        data_center_ids=data_center_ids,
         network_volume_name=args.network_volume_name,
         network_volume_size_gb=args.network_volume_size_gb,
         container_disk_gb=args.container_disk_gb,
@@ -328,7 +338,7 @@ def main() -> None:
     if args.command == "create":
         shared = _build_shared_config(args, env_values)
         train_pod, eval_pod = _build_pod_configs(args)
-        volume_payload = _network_volume_payload(shared)
+        volume_payload = None if args.skip_network_volume else _network_volume_payload(shared)
         planned_network_volume_id = None if args.skip_network_volume else "<create-me>"
         train_payload = _pod_payload(shared, train_pod, network_volume_id=planned_network_volume_id)
         eval_payload = _pod_payload(shared, eval_pod, network_volume_id=planned_network_volume_id)
@@ -336,7 +346,7 @@ def main() -> None:
             _print_json(
                 {
                     "shared_workspace": asdict(shared),
-                    "network_volume_payload": None if args.skip_network_volume else volume_payload,
+                    "network_volume_payload": volume_payload,
                     "train_pod_payload": train_payload,
                     "eval_pod_payload": eval_payload,
                 }
@@ -356,7 +366,7 @@ def main() -> None:
             existing_volume = _find_volume_by_name(
                 client.list_network_volumes(),
                 name=shared.network_volume_name,
-                data_center_id=shared.data_center_id,
+                data_center_id=shared.data_center_ids[0],
             )
             network_volume = existing_volume or client.create_network_volume(volume_payload)
         train_payload = _pod_payload(

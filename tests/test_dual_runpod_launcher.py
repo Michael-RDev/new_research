@@ -20,7 +20,8 @@ def _shared_config() -> SharedWorkspaceConfig:
         cloneval_repo_branch="main",
         bootstrap_script="scripts/runpod/bootstrap_workspace.sh",
         image_name="runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
-        data_center_id="US-KS-2",
+        cloud_type="SECURE",
+        data_center_ids=("US-KS-2",),
         network_volume_name="aoede-omnivoice-shared",
         network_volume_size_gb=2048,
         container_disk_gb=80,
@@ -37,6 +38,7 @@ def test_bootstrap_command_clones_root_repo_and_runs_root_script():
     command = _bootstrap_command(shared)
     assert "git clone --branch main https://github.com/example/new_research.git /workspace/new_research" in command
     assert "bash scripts/runpod/bootstrap_workspace.sh" in command
+    assert "exec sleep infinity" in command
 
 
 def test_pod_payload_includes_shared_workspace_env():
@@ -53,6 +55,8 @@ def test_pod_payload_includes_shared_workspace_env():
     assert payload["ports"] == ["22/tcp", "8888/http"]
     assert payload["minRAMPerGPU"] == 125
     assert payload["minVCPUPerGPU"] == 16
+    assert payload["dataCenterIds"] == ["US-KS-2"]
+    assert payload["cloudType"] == "SECURE"
 
 
 def test_pod_payload_uses_local_volume_when_network_volume_is_disabled():
@@ -74,6 +78,19 @@ def test_network_volume_payload_matches_shared_config():
         "size": 2048,
         "dataCenterId": "US-KS-2",
     }
+
+
+def test_pod_payload_omits_data_centers_when_any_data_center_is_enabled():
+    shared = SharedWorkspaceConfig(
+        **{**_shared_config().__dict__, "cloud_type": "COMMUNITY", "data_center_ids": ()}
+    )
+    payload = _pod_payload(
+        shared,
+        PodLaunchConfig(name="omnivoice-eval", gpu_type_id="NVIDIA RTX A4500"),
+        network_volume_id=None,
+    )
+    assert "dataCenterIds" not in payload
+    assert payload["cloudType"] == "COMMUNITY"
 
 
 def test_client_accepts_top_level_list_responses(monkeypatch):
