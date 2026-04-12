@@ -1,0 +1,2195 @@
+diff --git a/docs/benchmark_comparison.md b/docs/benchmark_comparison.md
+new file mode 100644
+index 0000000..ff70e2e
+--- /dev/null
++++ b/docs/benchmark_comparison.md
+@@ -0,0 +1,81 @@
++# Benchmark Comparison
++
++Run a controlled head-to-head between released OmniVoice and a candidate model
++using the same prompts, manifests, inference settings, and metric scripts.
++
++## What It Produces
++
++For each model and benchmark:
++
++- generated audio under `wavs/`
++- metric logs under `logs/`
++- `runtime_metrics.csv`
++- `runtime_metrics.summary.json`
++- `summary.json`
++
++For the full comparison:
++
++- `comparison/benchmark_summary.json`
++- `comparison/benchmark_summary.csv`
++- `comparison/primary_metric_scorecard.csv`
++- `comparison/report.md`
++
++If CloneEval is enabled, each model also gets:
++
++- `cloneval/metrics/results.csv`
++- `cloneval/metrics/aggregated_results.csv`
++- `cloneval/metrics/runtime_metrics.csv`
++- `cloneval/metrics/runtime_metrics.summary.json`
++
++## Quick Start
++
++```bash
++cd /Users/michael/Desktop/new_research/OmniVoice
++
++bash examples/run_benchmark_compare.sh \
++  /path/to/candidate_checkpoint \
++  exp/benchmark_compare \
++  /path/to/cloneval_test_list.jsonl
++```
++
++To download the standard evaluation assets first:
++
++```bash
++PREPARE_ASSETS=1 bash examples/run_benchmark_compare.sh \
++  /path/to/candidate_checkpoint
++```
++
++## Direct Python Entry Point
++
++```bash
++python -m omnivoice.scripts.benchmark_compare \
++  --baseline-model k2-fsa/OmniVoice \
++  --candidate-model /path/to/candidate_checkpoint \
++  --candidate-label CandidateModel \
++  --cloneval-test-list /path/to/cloneval_test_list.jsonl \
++  --prepare-assets
++```
++
++To compare released OmniVoice against an Aoede checkpoint, keep the baseline on
++the default OmniVoice modules and point the candidate at Aoede's bridge CLIs:
++
++```bash
++python -m omnivoice.scripts.benchmark_compare \
++  --baseline-model k2-fsa/OmniVoice \
++  --candidate-model /path/to/aoede/checkpoint.pt \
++  --candidate-label Aoede \
++  --candidate-infer-module aoede.eval.infer_batch \
++  --candidate-cloneval-module aoede.eval.cloneval_benchmark
++```
++
++## Notes
++
++- `fleurs` evaluation can run in a separate Python environment via
++  `--fleurs-python` if `omnilingual_asr` conflicts with the main environment.
++- The comparison report treats "better" as a benchmark result, not an
++  architectural claim.
++- Primary metric scorecard uses:
++  - CloneEval speaker similarity
++  - WER/CER
++  - SIM-o
++  - UTMOS where applicable
+diff --git a/docs/evaluation.md b/docs/evaluation.md
+index 71902b2..91904d1 100644
+--- a/docs/evaluation.md
++++ b/docs/evaluation.md
+@@ -31,6 +31,9 @@ bash run_eval.sh
+ # (2) inference and evaluation for each test set.
+ ```
+ 
++For a controlled baseline-vs-candidate comparison with unified reports, see
++[benchmark_comparison.md](benchmark_comparison.md).
++
+ ## Metrics Explained
+ 
+ ### WER (Word Error Rate)
+@@ -45,4 +48,4 @@ Measures how intelligible the generated speech is by transcribing it with an ASR
+ Cosine similarity between speaker embeddings (ECAPA-TDNN + WavLM) of the reference and generated audio. Higher is better.
+ 
+ ### UTMOS (Predicted MOS)
+-Neural network that predicts Mean Opinion Score from audio. Higher is better.
+\ No newline at end of file
++Neural network that predicts Mean Opinion Score from audio. Higher is better.
+diff --git a/examples/README.md b/examples/README.md
+index ebdf6e8..ef34299 100644
+--- a/examples/README.md
++++ b/examples/README.md
+@@ -7,6 +7,7 @@ This directory contains scripts and configs for training, fine-tuning, and evalu
+ | Training from scratch | [run_emilia.sh](run_emilia.sh) | Full pipeline on the Emilia dataset (data check, tokenization, training) |
+ | Fine-tuning | [run_finetune.sh](run_finetune.sh) | Fine-tune from a pretrained checkpoint using your own JSONL data |
+ | Evaluation | [run_eval.sh](run_eval.sh) | Evaluate WER, speaker similarity, and UTMOS on standard test sets |
++| Comparison | [run_benchmark_compare.sh](run_benchmark_compare.sh) | Compare baseline OmniVoice against a candidate model on standard benchmarks and optional CloneEval |
+ 
+ ---
+ 
+@@ -115,4 +116,3 @@ bash examples/run_eval.sh
+ ```
+ 
+ > See [docs/evaluation.md](../docs/evaluation.md) for metrics details, test set preparation, and running individual metrics.
+-
+diff --git a/examples/config/train_config_aoede.json b/examples/config/train_config_aoede.json
+new file mode 100644
+index 0000000..a6b07d9
+--- /dev/null
++++ b/examples/config/train_config_aoede.json
+@@ -0,0 +1,49 @@
++{
++    "llm_name_or_path": "Qwen/Qwen3-0.6B",
++    "audio_vocab_size": 1025,
++    "audio_mask_id": 1024,
++    "num_audio_codebook": 8,
++    "architecture_variant": "aoede",
++    "speaker_memory_num_tokens": 8,
++    "planner_stride": 4,
++    "planner_loss_weight": 0.2,
++    "speaker_loss_weight": 0.05,
++    "memory_conditioning_num_heads": 8,
++    "memory_conditioning_dropout": 0.1,
++    "aoede_use_speaker_memory": true,
++    "aoede_use_prosody_planner": true,
++    "aoede_use_speaker_consistency_loss": true,
++
++    "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++    "drop_cond_ratio": 0.1,
++    "prompt_ratio_range": [0.0, 0.3],
++    "mask_ratio_range": [0.0, 1.0],
++    "language_ratio": 0.0,
++    "use_pinyin_ratio": 0.0,
++    "instruct_ratio": 0.0,
++    "only_instruct_ratio": 0.0,
++
++    "resume_from_checkpoint": null,
++    "init_from_checkpoint": null,
++
++    "learning_rate": 1e-4,
++    "weight_decay": 0.01,
++    "max_grad_norm": 1.0,
++    "steps": 300000,
++    "seed": 42,
++    "warmup_type": "ratio",
++    "warmup_ratio": 0.03,
++    "warmup_steps": 0,
++
++    "batch_tokens": 8192,
++    "gradient_accumulation_steps": 1,
++    "num_workers": 4,
++
++    "mixed_precision": "bf16",
++    "allow_tf32": true,
++
++    "logging_steps": 100,
++    "eval_steps": 1000,
++    "save_steps": 10000,
++    "keep_last_n_checkpoints": -1
++}
+diff --git a/examples/config/train_config_aoede_core_continue.json b/examples/config/train_config_aoede_core_continue.json
+new file mode 100644
+index 0000000..76111c7
+--- /dev/null
++++ b/examples/config/train_config_aoede_core_continue.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "aoede",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "aoede_use_speaker_memory": true,
++  "aoede_use_prosody_planner": true,
++  "aoede_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.1,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 20000,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.03,
++  "warmup_steps": 0,
++  "batch_tokens": 8192,
++  "gradient_accumulation_steps": 2,
++  "num_workers": 8,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 50,
++  "eval_steps": 500,
++  "save_steps": 1000,
++  "keep_last_n_checkpoints": 5
++}
+diff --git a/examples/config/train_config_aoede_smoke.json b/examples/config/train_config_aoede_smoke.json
+new file mode 100644
+index 0000000..39e7ae7
+--- /dev/null
++++ b/examples/config/train_config_aoede_smoke.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "aoede",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "aoede_use_speaker_memory": true,
++  "aoede_use_prosody_planner": true,
++  "aoede_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.05,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 200,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.05,
++  "warmup_steps": 0,
++  "batch_tokens": 4096,
++  "gradient_accumulation_steps": 1,
++  "num_workers": 4,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 10,
++  "eval_steps": 50,
++  "save_steps": 50,
++  "keep_last_n_checkpoints": 2
++}
+diff --git a/examples/run_benchmark_compare.sh b/examples/run_benchmark_compare.sh
+new file mode 100644
+index 0000000..2e764c3
+--- /dev/null
++++ b/examples/run_benchmark_compare.sh
+@@ -0,0 +1,64 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Example usage:
++#   bash examples/run_benchmark_compare.sh \
++#     /path/to/candidate_checkpoint \
++#     exp/benchmark_compare \
++#     /path/to/cloneval_test_list.jsonl
++#
++# Optional environment overrides:
++#   BASELINE_MODEL=k2-fsa/OmniVoice
++#   BASELINE_LABEL=OmniVoice
++#   CANDIDATE_LABEL=CandidateModel
++#   PREPARE_ASSETS=1
++#   BENCHMARKS="librispeech_pc seedtts_en seedtts_zh minimax fleurs"
++#   FLEURS_PYTHON=/path/to/python
++
++if [ $# -lt 1 ]; then
++  echo "Usage: $0 <candidate_model> [output_dir] [cloneval_test_list]"
++  exit 1
++fi
++
++CANDIDATE_MODEL="${1}"
++OUTPUT_DIR="${2:-exp/benchmark_compare}"
++CLONEVAL_TEST_LIST="${3:-}"
++
++BASELINE_MODEL="${BASELINE_MODEL:-k2-fsa/OmniVoice}"
++BASELINE_INFER_MODULE="${BASELINE_INFER_MODULE:-omnivoice.cli.infer_batch}"
++BASELINE_CLONEVAL_MODULE="${BASELINE_CLONEVAL_MODULE:-omnivoice.eval.cloneval_benchmark}"
++BASELINE_LABEL="${BASELINE_LABEL:-OmniVoice}"
++CANDIDATE_INFER_MODULE="${CANDIDATE_INFER_MODULE:-omnivoice.cli.infer_batch}"
++CANDIDATE_CLONEVAL_MODULE="${CANDIDATE_CLONEVAL_MODULE:-omnivoice.eval.cloneval_benchmark}"
++CANDIDATE_LABEL="${CANDIDATE_LABEL:-CandidateModel}"
++PREPARE_ASSETS="${PREPARE_ASSETS:-0}"
++BENCHMARKS="${BENCHMARKS:-librispeech_pc seedtts_en seedtts_zh minimax fleurs}"
++FLEURS_PYTHON="${FLEURS_PYTHON:-python}"
++PYTHON_BIN="${PYTHON_BIN:-python}"
++
++read -r -a benchmark_args <<< "${BENCHMARKS}"
++
++cmd=(
++  "${PYTHON_BIN}" -m omnivoice.scripts.benchmark_compare
++  --baseline-model "${BASELINE_MODEL}"
++  --candidate-model "${CANDIDATE_MODEL}"
++  --baseline-infer-module "${BASELINE_INFER_MODULE}"
++  --candidate-infer-module "${CANDIDATE_INFER_MODULE}"
++  --baseline-cloneval-module "${BASELINE_CLONEVAL_MODULE}"
++  --candidate-cloneval-module "${CANDIDATE_CLONEVAL_MODULE}"
++  --baseline-label "${BASELINE_LABEL}"
++  --candidate-label "${CANDIDATE_LABEL}"
++  --output-dir "${OUTPUT_DIR}"
++  --fleurs-python "${FLEURS_PYTHON}"
++  --benchmarks "${benchmark_args[@]}"
++)
++
++if [ "${PREPARE_ASSETS}" = "1" ]; then
++  cmd+=(--prepare-assets)
++fi
++
++if [ -n "${CLONEVAL_TEST_LIST}" ]; then
++  cmd+=(--cloneval-test-list "${CLONEVAL_TEST_LIST}")
++fi
++
++"${cmd[@]}"
+diff --git a/omnivoice/cli/infer_batch.py b/omnivoice/cli/infer_batch.py
+index 82ad1af..903da9c 100644
+--- a/omnivoice/cli/infer_batch.py
++++ b/omnivoice/cli/infer_batch.py
+@@ -32,13 +32,17 @@ Test list format (JSONL, one JSON object per line):
+ """
+ 
+ import argparse
++import csv
++import json
+ import logging
+ import multiprocessing as mp
+ import os
+ import signal
++import sys
+ import time
+ import traceback
+ from concurrent.futures import ProcessPoolExecutor, as_completed
++from pathlib import Path
+ from typing import List, Optional, Tuple
+ 
+ import torch
+@@ -65,6 +69,19 @@ worker_model = None
+ SAMPLING_RATE = 24000
+ 
+ 
++def _get_peak_rss_bytes() -> int:
++    """Return the current process peak RSS in bytes when available."""
++    try:
++        import resource
++
++        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
++        if sys.platform == "darwin":
++            return int(usage)
++        return int(usage * 1024)
++    except Exception:
++        return 0
++
++
+ def get_parser():
+     parser = argparse.ArgumentParser(description="Infer OmniVoice Model")
+     parser.add_argument(
+@@ -197,6 +214,18 @@ def get_parser():
+         "language_id/language_name fields. If provided, both language_id and "
+         "language_name will be set to this value.",
+     )
++    parser.add_argument(
++        "--runtime_csv_path",
++        type=str,
++        default=None,
++        help="Optional CSV path for per-sample runtime metrics.",
++    )
++    parser.add_argument(
++        "--runtime_summary_path",
++        type=str,
++        default=None,
++        help="Optional JSON path for aggregate runtime metrics.",
++    )
+     return parser
+ 
+ 
+@@ -395,6 +424,7 @@ def run_inference_batch(
+                 save_name,
+                 batch_synth_time / len(batch_samples),
+                 audio_duration,
++                _get_peak_rss_bytes(),
+                 "success",
+             )
+         )
+@@ -452,6 +482,7 @@ def main():
+ 
+     total_synthesis_time = []
+     total_audio_duration = []
++    runtime_rows = []
+ 
+     try:
+         with ProcessPoolExecutor(
+@@ -488,10 +519,19 @@ def main():
+             ):
+                 try:
+                     result = future.result()
+-                    for s_name, synth_time, audio_dur, status in result:
++                    for s_name, synth_time, audio_dur, peak_rss_bytes, status in result:
+                         total_synthesis_time.append(synth_time)
+                         total_audio_duration.append(audio_dur)
+                         rtf = synth_time / audio_dur if audio_dur > 0 else float("inf")
++                        runtime_rows.append(
++                            {
++                                "id": s_name,
++                                "latency_s": round(synth_time, 4),
++                                "output_duration_s": round(audio_dur, 4),
++                                "real_time_factor": round(rtf, 4),
++                                "peak_rss_bytes": int(peak_rss_bytes),
++                            }
++                        )
+                         logging.debug(
+                             f"Processed {s_name}: Audio Duration={audio_dur:.2f}s, "
+                             f"Synthesis Time={synth_time:.2f}s, RTF={rtf:.4f}"
+@@ -518,8 +558,62 @@ def main():
+         average_rtf = total_synthesis_time / total_audio_duration
+         logging.info(f"Average RTF: {average_rtf:.4f}")
+     else:
++        average_rtf = None
+         logging.warning("No speech was generated. RTF cannot be computed.")
+ 
++    runtime_csv_path = args.runtime_csv_path
++    runtime_summary_path = args.runtime_summary_path
++    if runtime_csv_path and runtime_summary_path is None:
++        runtime_summary_path = str(Path(runtime_csv_path).with_suffix(".summary.json"))
++
++    if runtime_csv_path:
++        runtime_csv = Path(runtime_csv_path)
++        runtime_csv.parent.mkdir(parents=True, exist_ok=True)
++        with runtime_csv.open("w", encoding="utf-8", newline="") as f:
++            writer = csv.DictWriter(
++                f,
++                fieldnames=[
++                    "id",
++                    "latency_s",
++                    "output_duration_s",
++                    "real_time_factor",
++                    "peak_rss_bytes",
++                ],
++            )
++            writer.writeheader()
++            writer.writerows(runtime_rows)
++        logging.info(f"Saved per-sample runtime metrics to {runtime_csv}")
++
++    if runtime_summary_path:
++        summary_path = Path(runtime_summary_path)
++        summary_path.parent.mkdir(parents=True, exist_ok=True)
++        summary = {
++            "num_samples": len(runtime_rows),
++            "total_audio_duration_s": round(total_audio_duration, 4),
++            "total_synthesis_time_s": round(total_synthesis_time, 4),
++            "mean_latency_s": round(
++                sum(row["latency_s"] for row in runtime_rows) / len(runtime_rows), 4
++            )
++            if runtime_rows
++            else 0.0,
++            "mean_output_duration_s": round(
++                sum(row["output_duration_s"] for row in runtime_rows)
++                / len(runtime_rows),
++                4,
++            )
++            if runtime_rows
++            else 0.0,
++            "mean_real_time_factor": round(average_rtf, 4)
++            if average_rtf is not None
++            else None,
++            "max_peak_rss_bytes": max(
++                (row["peak_rss_bytes"] for row in runtime_rows),
++                default=0,
++            ),
++        }
++        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
++        logging.info(f"Saved aggregate runtime metrics to {summary_path}")
++
+     logging.info("Done!")
+ 
+ 
+diff --git a/omnivoice/eval/benchmark_summary.py b/omnivoice/eval/benchmark_summary.py
+new file mode 100644
+index 0000000..6f52d80
+--- /dev/null
++++ b/omnivoice/eval/benchmark_summary.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++
++"""Utilities for parsing benchmark outputs into comparable summaries."""
++
++from __future__ import annotations
++
++import csv
++import json
++import re
++from pathlib import Path
++from typing import Any, Iterable, Optional
++
++
++def _read_text(path: Path) -> str:
++    return path.read_text(encoding="utf-8") if path.exists() else ""
++
++
++def _extract_last_float(pattern: str, text: str) -> Optional[float]:
++    matches = re.findall(pattern, text, flags=re.MULTILINE)
++    if not matches:
++        return None
++    return float(matches[-1])
++
++
++def parse_runtime_summary(path: Path) -> dict[str, Any]:
++    if not path.exists():
++        return {}
++    payload = json.loads(path.read_text(encoding="utf-8"))
++    return {
++        "num_samples": payload.get("num_samples"),
++        "mean_latency_s": payload.get("mean_latency_s"),
++        "mean_output_duration_s": payload.get("mean_output_duration_s"),
++        "mean_real_time_factor": payload.get("mean_real_time_factor"),
++        "max_rss_bytes": payload.get("max_peak_rss_bytes", payload.get("max_rss_bytes")),
++        "total_audio_duration_s": payload.get("total_audio_duration_s"),
++        "total_synthesis_time_s": payload.get("total_synthesis_time_s"),
++    }
++
++
++def parse_sim_log(path: Path) -> dict[str, Optional[float]]:
++    text = _read_text(path)
++    average = _extract_last_float(r"Average SIM-o:\s*([0-9.]+)", text)
++    macro_average = _extract_last_float(
++        r"Macro-average SIM-o over \d+ languages:\s*([0-9.]+)", text
++    )
++    return {
++        "average": average,
++        "macro_average": macro_average,
++        "selected": macro_average if macro_average is not None else average,
++    }
++
++
++def parse_utmos_log(path: Path) -> dict[str, Optional[float]]:
++    text = _read_text(path)
++    average = _extract_last_float(r"Average UTMOS:\s*([0-9.]+)", text)
++    macro_average = _extract_last_float(
++        r"Macro-average UTMOS over \d+ languages:\s*([0-9.]+)", text
++    )
++    return {
++        "average": average,
++        "macro_average": macro_average,
++        "selected": macro_average if macro_average is not None else average,
++    }
++
++
++def parse_hubert_wer_log(path: Path) -> dict[str, Optional[float]]:
++    text = _read_text(path)
++    weighted = _extract_last_float(r"WER:\s*([0-9.]+)%", text)
++    return {
++        "average": None,
++        "weighted": weighted,
++        "macro_average": None,
++        "selected": weighted,
++    }
++
++
++def parse_seedtts_wer_log(path: Path) -> dict[str, Optional[float]]:
++    text = _read_text(path)
++    average = _extract_last_float(
++        r"Seed-TTS WER \(Avg of WERs\):\s*([0-9.]+)%", text
++    )
++    weighted = _extract_last_float(r"WER \(Weighted\):\s*([0-9.]+)%", text)
++    return {
++        "average": average,
++        "weighted": weighted,
++        "macro_average": None,
++        "selected": weighted if weighted is not None else average,
++    }
++
++
++def parse_multilingual_wer_log(path: Path) -> dict[str, Optional[float]]:
++    text = _read_text(path)
++    macro_average = _extract_last_float(
++        r"Macro-average WER over \d+ languages:\s*([0-9.]+)%", text
++    )
++    overall = _extract_last_float(r"Overall WER:\s*([0-9.]+)%", text)
++    return {
++        "average": None,
++        "weighted": overall,
++        "macro_average": macro_average,
++        "selected": macro_average if macro_average is not None else overall,
++    }
++
++
++def _mean(values: Iterable[float]) -> Optional[float]:
++    values = list(values)
++    if not values:
++        return None
++    return sum(values) / len(values)
++
++
++def summarize_cloneval_metrics(metrics_dir: Path) -> dict[str, Any]:
++    aggregated_path = metrics_dir / "aggregated_results.csv"
++    runtime_summary = parse_runtime_summary(metrics_dir / "runtime_metrics.summary.json")
++
++    rows: list[dict[str, str]] = []
++    if aggregated_path.exists():
++        with aggregated_path.open("r", encoding="utf-8", newline="") as f:
++            rows = list(csv.DictReader(f))
++
++    def _column_mean(name: str) -> Optional[float]:
++        values = []
++        for row in rows:
++            value = row.get(name)
++            if value in (None, ""):
++                continue
++            values.append(float(value))
++        return _mean(values)
++
++    metrics = {
++        "speaker_similarity": _column_mean("speaker_similarity"),
++        "intelligibility": _column_mean("intelligibility"),
++        "naturalness": _column_mean("naturalness"),
++        "emotion_transfer": _column_mean("emotion_transfer"),
++    }
++    metrics.update(runtime_summary)
++    return metrics
++
++
++def benchmark_primary_metrics(benchmark: str) -> list[tuple[str, str]]:
++    mapping = {
++        "librispeech_pc": [
++            ("wer_selected", "lower"),
++            ("sim_selected", "higher"),
++            ("utmos_selected", "higher"),
++        ],
++        "seedtts_en": [
++            ("wer_selected", "lower"),
++            ("sim_selected", "higher"),
++            ("utmos_selected", "higher"),
++        ],
++        "seedtts_zh": [
++            ("wer_selected", "lower"),
++            ("sim_selected", "higher"),
++            ("utmos_selected", "higher"),
++        ],
++        "minimax": [
++            ("wer_selected", "lower"),
++            ("sim_selected", "higher"),
++        ],
++        "fleurs": [
++            ("wer_selected", "lower"),
++            ("sim_selected", "higher"),
++        ],
++        "cloneval": [
++            ("speaker_similarity", "higher"),
++        ],
++    }
++    return mapping.get(benchmark, [])
++
++
++def choose_winner(
++    baseline_value: Optional[float],
++    candidate_value: Optional[float],
++    direction: str,
++) -> str:
++    if baseline_value is None or candidate_value is None:
++        return "n/a"
++    if baseline_value == candidate_value:
++        return "tie"
++    if direction == "higher":
++        return "candidate" if candidate_value > baseline_value else "baseline"
++    return "candidate" if candidate_value < baseline_value else "baseline"
++
++
++def format_metric(value: Optional[float], digits: int = 4) -> str:
++    if value is None:
++        return "n/a"
++    return f"{value:.{digits}f}"
++
+diff --git a/omnivoice/models/aoede.py b/omnivoice/models/aoede.py
+new file mode 100644
+index 0000000..2b1dd62
+--- /dev/null
++++ b/omnivoice/models/aoede.py
+@@ -0,0 +1,14 @@
++#!/usr/bin/env python3
++
++"""Aoede conditioning modules.
++
++This module is the public name for the speaker-memory and prosody-plan
++conditioning stack that was prototyped under the internal MnemosVoice codename.
++The legacy module path remains available for older checkpoints and scripts.
++"""
++
++from omnivoice.models.mnemosvoice import (  # noqa: F401
++    MemoryConditioner,
++    ProsodyPlanAdapter,
++    SpeakerMemoryEncoder,
++)
+diff --git a/omnivoice/models/omnivoice.py b/omnivoice/models/omnivoice.py
+index b69e72c..c770071 100644
+--- a/omnivoice/models/omnivoice.py
++++ b/omnivoice/models/omnivoice.py
+@@ -59,7 +59,7 @@ from omnivoice.utils.audio import (
+     remove_silence,
+     trim_long_audio,
+ )
+-from omnivoice.models.mnemosvoice import (
++from omnivoice.models.aoede import (
+     MemoryConditioner,
+     ProsodyPlanAdapter,
+     SpeakerMemoryEncoder,
+@@ -177,9 +177,12 @@ class OmniVoiceConfig(PretrainedConfig):
+         speaker_loss_weight: float = 0.05,
+         memory_conditioning_num_heads: int = 8,
+         memory_conditioning_dropout: float = 0.1,
+-        mnemosvoice_use_speaker_memory: bool = True,
+-        mnemosvoice_use_prosody_planner: bool = True,
+-        mnemosvoice_use_speaker_consistency_loss: bool = True,
++        aoede_use_speaker_memory: Optional[bool] = None,
++        aoede_use_prosody_planner: Optional[bool] = None,
++        aoede_use_speaker_consistency_loss: Optional[bool] = None,
++        mnemosvoice_use_speaker_memory: Optional[bool] = None,
++        mnemosvoice_use_prosody_planner: Optional[bool] = None,
++        mnemosvoice_use_speaker_consistency_loss: Optional[bool] = None,
+         llm_config: Optional[Union[dict, PretrainedConfig]] = None,
+         **kwargs,
+     ):
+@@ -193,6 +196,8 @@ class OmniVoiceConfig(PretrainedConfig):
+         self.audio_vocab_size = audio_vocab_size
+         self.audio_mask_id = audio_mask_id
+         self.num_audio_codebook = num_audio_codebook
++        if architecture_variant == "mnemosvoice":
++            architecture_variant = "aoede"
+         self.architecture_variant = architecture_variant
+         self.speaker_memory_num_tokens = speaker_memory_num_tokens
+         self.planner_stride = planner_stride
+@@ -200,10 +205,38 @@ class OmniVoiceConfig(PretrainedConfig):
+         self.speaker_loss_weight = speaker_loss_weight
+         self.memory_conditioning_num_heads = memory_conditioning_num_heads
+         self.memory_conditioning_dropout = memory_conditioning_dropout
+-        self.mnemosvoice_use_speaker_memory = mnemosvoice_use_speaker_memory
+-        self.mnemosvoice_use_prosody_planner = mnemosvoice_use_prosody_planner
++        self.aoede_use_speaker_memory = (
++            aoede_use_speaker_memory
++            if aoede_use_speaker_memory is not None
++            else (
++                mnemosvoice_use_speaker_memory
++                if mnemosvoice_use_speaker_memory is not None
++                else True
++            )
++        )
++        self.aoede_use_prosody_planner = (
++            aoede_use_prosody_planner
++            if aoede_use_prosody_planner is not None
++            else (
++                mnemosvoice_use_prosody_planner
++                if mnemosvoice_use_prosody_planner is not None
++                else True
++            )
++        )
++        self.aoede_use_speaker_consistency_loss = (
++            aoede_use_speaker_consistency_loss
++            if aoede_use_speaker_consistency_loss is not None
++            else (
++                mnemosvoice_use_speaker_consistency_loss
++                if mnemosvoice_use_speaker_consistency_loss is not None
++                else True
++            )
++        )
++        # Preserve legacy attribute names while we transition configs/checkpoints.
++        self.mnemosvoice_use_speaker_memory = self.aoede_use_speaker_memory
++        self.mnemosvoice_use_prosody_planner = self.aoede_use_prosody_planner
+         self.mnemosvoice_use_speaker_consistency_loss = (
+-            mnemosvoice_use_speaker_consistency_loss
++            self.aoede_use_speaker_consistency_loss
+         )
+         if audio_codebook_weights is None:
+             audio_codebook_weights = [8, 8, 6, 6, 4, 4, 2, 2]
+@@ -245,18 +278,18 @@ class OmniVoice(PreTrainedModel):
+         self.prosody_planner = None
+         self.memory_conditioner = None
+         self.target_speaker_proj = None
+-        if self._mnemosvoice_enabled:
++        if self._aoede_enabled:
+             hidden_size = self.config.llm_config.hidden_size
+             num_heads = self.config.memory_conditioning_num_heads
+             dropout = self.config.memory_conditioning_dropout
+-            if self.config.mnemosvoice_use_speaker_memory:
++            if self.config.aoede_use_speaker_memory:
+                 self.speaker_memory_encoder = SpeakerMemoryEncoder(
+                     hidden_size=hidden_size,
+                     num_memory_tokens=self.config.speaker_memory_num_tokens,
+                     num_heads=num_heads,
+                     dropout=dropout,
+                 )
+-            if self.config.mnemosvoice_use_prosody_planner:
++            if self.config.aoede_use_prosody_planner:
+                 self.prosody_planner = ProsodyPlanAdapter(
+                     hidden_size=hidden_size,
+                     vocab_size=self.config.audio_vocab_size,
+@@ -269,7 +302,7 @@ class OmniVoice(PreTrainedModel):
+                 num_heads=num_heads,
+                 dropout=dropout,
+             )
+-            if self.config.mnemosvoice_use_speaker_consistency_loss:
++            if self.config.aoede_use_speaker_consistency_loss:
+                 self.target_speaker_proj = nn.Sequential(
+                     nn.LayerNorm(hidden_size),
+                     nn.Linear(hidden_size, hidden_size),
+@@ -291,7 +324,11 @@ class OmniVoice(PreTrainedModel):
+ 
+     @property
+     def _mnemosvoice_enabled(self) -> bool:
+-        return getattr(self.config, "architecture_variant", "omnivoice") == "mnemosvoice"
++        return self._aoede_enabled
++
++    @property
++    def _aoede_enabled(self) -> bool:
++        return getattr(self.config, "architecture_variant", "omnivoice") == "aoede"
+ 
+     @classmethod
+     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+@@ -465,7 +502,7 @@ class OmniVoice(PreTrainedModel):
+         all_masked = (input_ids == self.config.audio_mask_id).all(dim=1)
+         return audio_mask & all_masked
+ 
+-    def _apply_mnemosvoice_conditioning(
++    def _apply_aoede_conditioning(
+         self,
+         hidden_states: torch.Tensor,
+         input_ids: torch.Tensor,
+@@ -476,7 +513,7 @@ class OmniVoice(PreTrainedModel):
+         document_ids: Optional[torch.Tensor] = None,
+     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+         """Apply prompt-memory and coarse planning to target hidden states."""
+-        if not self._mnemosvoice_enabled:
++        if not self._aoede_enabled:
+             return hidden_states, None, None
+ 
+         if prompt_mask is None:
+@@ -647,8 +684,8 @@ class OmniVoice(PreTrainedModel):
+ 
+         plan_loss = None
+         speaker_loss = None
+-        if self._mnemosvoice_enabled:
+-            hidden_states, plan_loss, speaker_loss = self._apply_mnemosvoice_conditioning(
++        if self._aoede_enabled:
++            hidden_states, plan_loss, speaker_loss = self._apply_aoede_conditioning(
+                 hidden_states=hidden_states,
+                 input_ids=input_ids,
+                 audio_mask=audio_mask,
+diff --git a/omnivoice/scripts/benchmark_compare.py b/omnivoice/scripts/benchmark_compare.py
+new file mode 100644
+index 0000000..0bf3604
+--- /dev/null
++++ b/omnivoice/scripts/benchmark_compare.py
+@@ -0,0 +1,1100 @@
++#!/usr/bin/env python3
++
++"""Run a controlled head-to-head benchmark comparison for OmniVoice models."""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++import logging
++import os
++import re
++import shlex
++import shutil
++import subprocess
++import sys
++import tarfile
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Optional
++
++import torch
++
++from omnivoice.eval.benchmark_summary import (
++    benchmark_primary_metrics,
++    choose_winner,
++    format_metric,
++    parse_hubert_wer_log,
++    parse_multilingual_wer_log,
++    parse_runtime_summary,
++    parse_seedtts_wer_log,
++    parse_sim_log,
++    parse_utmos_log,
++    summarize_cloneval_metrics,
++)
++
++
++@dataclass(frozen=True)
++class BenchmarkSpec:
++    name: str
++    test_list: str
++    wer_kind: str
++    transcript_test_list: Optional[str] = None
++    has_similarity: bool = True
++    has_utmos: bool = False
++    seedtts_lang: Optional[str] = None
++
++
++BENCHMARK_SPECS: dict[str, BenchmarkSpec] = {
++    "librispeech_pc": BenchmarkSpec(
++        name="librispeech_pc",
++        test_list="librispeech_pc_test_clean.jsonl",
++        transcript_test_list="librispeech_pc_test_clean_transcript.jsonl",
++        wer_kind="hubert",
++        has_similarity=True,
++        has_utmos=True,
++    ),
++    "seedtts_en": BenchmarkSpec(
++        name="seedtts_en",
++        test_list="seedtts_test_en.jsonl",
++        wer_kind="seedtts",
++        has_similarity=True,
++        has_utmos=True,
++        seedtts_lang="en",
++    ),
++    "seedtts_zh": BenchmarkSpec(
++        name="seedtts_zh",
++        test_list="seedtts_test_zh.jsonl",
++        wer_kind="seedtts",
++        has_similarity=True,
++        has_utmos=True,
++        seedtts_lang="zh",
++    ),
++    "minimax": BenchmarkSpec(
++        name="minimax",
++        test_list="minimax_multilingual_24.jsonl",
++        wer_kind="multilingual",
++        has_similarity=True,
++        has_utmos=False,
++    ),
++    "fleurs": BenchmarkSpec(
++        name="fleurs",
++        test_list="fleurs_multilingual_102.jsonl",
++        wer_kind="fleurs",
++        has_similarity=True,
++        has_utmos=False,
++    ),
++}
++
++EVAL_DATA_FILES = [
++    "librispeech_pc_test_clean.jsonl",
++    "librispeech_pc_test_clean_transcript.jsonl",
++    "seedtts_test_en.jsonl",
++    "seedtts_test_zh.jsonl",
++    "minimax_multilingual_24.jsonl",
++    "fleurs_multilingual_102.jsonl",
++]
++
++EVAL_ARCHIVES = [
++    "librispeech_pc_testset.tar.gz",
++    "seedtts_testset.tar.gz",
++    "minimax_multilingual_24.tar.gz",
++    "fleurs_multilingual_102.tar.gz",
++]
++
++
++def _slugify(value: str) -> str:
++    slug = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
++    return slug or "model"
++
++
++def _quote(cmd: list[str]) -> str:
++    return shlex.join(cmd)
++
++
++def _run_command(cmd: list[str], cwd: Path, env: dict[str, str]) -> None:
++    logging.info("Running command: %s", _quote(cmd))
++    subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
++
++
++def _repo_env(repo_root: Path) -> dict[str, str]:
++    env = os.environ.copy()
++    current = env.get("PYTHONPATH")
++    python_paths = [str(repo_root)]
++    if repo_root.parent != repo_root:
++        python_paths.append(str(repo_root.parent))
++    if current:
++        python_paths.append(current)
++    env["PYTHONPATH"] = ":".join(python_paths)
++    return env
++
++
++def _default_cloneval_device() -> str:
++    if torch.cuda.is_available():
++        return "cuda:0"
++    if torch.backends.mps.is_available():
++        return "mps"
++    return "cpu"
++
++
++def get_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--baseline-model",
++        type=str,
++        default="k2-fsa/OmniVoice",
++        help="Released OmniVoice checkpoint to use as the baseline.",
++    )
++    parser.add_argument(
++        "--candidate-model",
++        type=str,
++        required=True,
++        help="Local checkpoint or HF repo id for the candidate model.",
++    )
++    parser.add_argument(
++        "--baseline-infer-module",
++        type=str,
++        default="omnivoice.cli.infer_batch",
++        help="Python module used to generate baseline benchmark audio.",
++    )
++    parser.add_argument(
++        "--candidate-infer-module",
++        type=str,
++        default="omnivoice.cli.infer_batch",
++        help="Python module used to generate candidate benchmark audio.",
++    )
++    parser.add_argument(
++        "--baseline-label",
++        type=str,
++        default="OmniVoice",
++        help="Display label for the baseline model.",
++    )
++    parser.add_argument(
++        "--candidate-label",
++        type=str,
++        default="CandidateModel",
++        help="Display label for the candidate model.",
++    )
++    parser.add_argument(
++        "--benchmarks",
++        nargs="+",
++        choices=sorted(BENCHMARK_SPECS.keys()),
++        default=["librispeech_pc", "seedtts_en", "seedtts_zh", "minimax", "fleurs"],
++        help="Standard benchmarks to run.",
++    )
++    parser.add_argument(
++        "--cloneval-test-list",
++        type=str,
++        default=None,
++        help="Optional OmniVoice-style JSONL test list for CloneEval.",
++    )
++    parser.add_argument(
++        "--cloneval-repo",
++        type=str,
++        default="../cloneval",
++        help="Path to the official CloneEval repository.",
++    )
++    parser.add_argument(
++        "--baseline-cloneval-module",
++        type=str,
++        default="omnivoice.eval.cloneval_benchmark",
++        help="Python module used to run baseline CloneEval generation.",
++    )
++    parser.add_argument(
++        "--candidate-cloneval-module",
++        type=str,
++        default="omnivoice.eval.cloneval_benchmark",
++        help="Python module used to run candidate CloneEval generation.",
++    )
++    parser.add_argument(
++        "--cloneval-device-map",
++        type=str,
++        default=_default_cloneval_device(),
++        help="Device map for CloneEval inference.",
++    )
++    parser.add_argument(
++        "--cloneval-dtype",
++        type=str,
++        default="float16" if torch.cuda.is_available() else "float32",
++        help="Torch dtype for CloneEval inference.",
++    )
++    parser.add_argument(
++        "--cloneval-emotion-transfer",
++        action="store_true",
++        help="Enable CloneEval emotion-transfer scoring when supported.",
++    )
++    parser.add_argument(
++        "--output-dir",
++        type=str,
++        default="exp/benchmark_compare",
++        help="Root directory for comparison artifacts.",
++    )
++    parser.add_argument(
++        "--eval-data-dir",
++        type=str,
++        default="download/tts_eval_datasets",
++        help="Directory containing the benchmark JSONLs and extracted audio.",
++    )
++    parser.add_argument(
++        "--eval-model-dir",
++        type=str,
++        default="download/tts_eval_models",
++        help="Directory containing evaluation models.",
++    )
++    parser.add_argument(
++        "--prepare-assets",
++        action="store_true",
++        help="Download standard benchmark datasets/models before evaluation.",
++    )
++    parser.add_argument(
++        "--render-only",
++        action="store_true",
++        help="Skip command execution and only render summaries from existing outputs.",
++    )
++    parser.add_argument(
++        "--skip-existing",
++        action="store_true",
++        help="Reuse completed benchmark outputs when summary files already exist.",
++    )
++    parser.add_argument(
++        "--num-step",
++        type=int,
++        default=32,
++        help="Iterative decoding steps shared by both models.",
++    )
++    parser.add_argument(
++        "--guidance-scale",
++        type=float,
++        default=2.0,
++        help="Classifier-free guidance scale shared by both models.",
++    )
++    parser.add_argument(
++        "--t-shift",
++        type=float,
++        default=0.1,
++        help="Inference time-shift shared by both models.",
++    )
++    parser.add_argument(
++        "--infer-nj-per-gpu",
++        type=int,
++        default=1,
++        help="Number of inference workers per GPU for batch generation.",
++    )
++    parser.add_argument(
++        "--metric-nj-per-gpu",
++        type=int,
++        default=1,
++        help="Number of metric workers per GPU for SIM/UTMOS/WER scripts.",
++    )
++    parser.add_argument(
++        "--batch-duration",
++        type=float,
++        default=600.0,
++        help="Inference batch duration budget shared by both models.",
++    )
++    parser.add_argument(
++        "--batch-size",
++        type=int,
++        default=0,
++        help="Optional fixed inference batch size. Overrides duration batching when > 0.",
++    )
++    parser.add_argument(
++        "--preprocess-prompt",
++        action=argparse.BooleanOptionalAction,
++        default=False,
++        help="Whether to preprocess reference prompts during inference.",
++    )
++    parser.add_argument(
++        "--postprocess-output",
++        action=argparse.BooleanOptionalAction,
++        default=False,
++        help="Whether to post-process generated output audio.",
++    )
++    parser.add_argument(
++        "--audio-chunk-threshold",
++        type=float,
++        default=1000.0,
++        help="Audio chunk split threshold passed to batch inference.",
++    )
++    parser.add_argument(
++        "--audio-chunk-duration",
++        type=float,
++        default=15.0,
++        help="Maximum chunk duration for long prompts.",
++    )
++    parser.add_argument(
++        "--denoise",
++        action=argparse.BooleanOptionalAction,
++        default=True,
++        help="Whether to enable prompt denoising for both models.",
++    )
++    parser.add_argument(
++        "--fleurs-python",
++        type=str,
++        default=sys.executable,
++        help="Python executable to use for FLEURS WER evaluation.",
++    )
++    parser.add_argument(
++        "--fleurs-model-card",
++        type=str,
++        default="omniASR_LLM_Unlimited_7B_v2",
++        help="Omnilingual-ASR model card or local path for FLEURS evaluation.",
++    )
++    parser.add_argument(
++        "--fleurs-batch-size",
++        type=int,
++        default=50,
++        help="Batch size passed to the FLEURS WER script.",
++    )
++    parser.add_argument(
++        "--fleurs-chunk-size",
++        type=int,
++        default=100,
++        help="Chunk size passed to the FLEURS WER script.",
++    )
++    return parser
++
++
++def prepare_eval_assets(
++    repo_root: Path,
++    data_dir: Path,
++    model_dir: Path,
++    env: dict[str, str],
++) -> None:
++    if shutil.which("huggingface-cli") is None:
++        raise RuntimeError(
++            "huggingface-cli is required for --prepare-assets but is not installed."
++        )
++
++    data_dir.mkdir(parents=True, exist_ok=True)
++    model_dir.mkdir(parents=True, exist_ok=True)
++
++    dataset_repo = "k2-fsa/TTS_eval_datasets"
++    for file_name in EVAL_DATA_FILES + EVAL_ARCHIVES:
++        target = data_dir / file_name
++        if target.exists():
++            continue
++        _run_command(
++            [
++                "huggingface-cli",
++                "download",
++                "--repo-type",
++                "dataset",
++                "--local-dir",
++                str(data_dir),
++                dataset_repo,
++                file_name,
++            ],
++            cwd=repo_root,
++            env=env,
++        )
++
++    for archive_name in EVAL_ARCHIVES:
++        archive_path = data_dir / archive_name
++        if not archive_path.exists():
++            continue
++        with tarfile.open(archive_path, "r:gz") as archive:
++            sentinel = next(
++                (
++                    data_dir / member.name
++                    for member in archive.getmembers()
++                    if member.isfile()
++                ),
++                None,
++            )
++            if sentinel is not None and sentinel.exists():
++                continue
++            archive.extractall(path=data_dir)
++
++    sentinel_paths = [
++        model_dir / "speaker_similarity" / "wavlm_large_finetune.pth",
++        model_dir / "mos" / "utmos22_strong_step7459_v1.pt",
++        model_dir / "wer" / "whisper-large-v3",
++    ]
++    if all(path.exists() for path in sentinel_paths):
++        return
++
++    _run_command(
++        [
++            "huggingface-cli",
++            "download",
++            "--local-dir",
++            str(model_dir),
++            "k2-fsa/TTS_eval_models",
++        ],
++        cwd=repo_root,
++        env=env,
++    )
++
++
++def _write_json(path: Path, payload: dict[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
++
++
++def _standard_runtime_summary_path(benchmark_dir: Path) -> Path:
++    return benchmark_dir / "runtime_metrics.summary.json"
++
++
++def _standard_runtime_csv_path(benchmark_dir: Path) -> Path:
++    return benchmark_dir / "runtime_metrics.csv"
++
++
++def _benchmark_test_list(spec: BenchmarkSpec, eval_data_dir: Path) -> Path:
++    return eval_data_dir / spec.test_list
++
++
++def _benchmark_transcript_test_list(spec: BenchmarkSpec, eval_data_dir: Path) -> Path:
++    if spec.transcript_test_list is None:
++        return _benchmark_test_list(spec, eval_data_dir)
++    return eval_data_dir / spec.transcript_test_list
++
++
++def _parse_standard_summary(spec: BenchmarkSpec, benchmark_dir: Path) -> dict[str, Any]:
++    logs_dir = benchmark_dir / "logs"
++    runtime = parse_runtime_summary(_standard_runtime_summary_path(benchmark_dir))
++    sim = parse_sim_log(logs_dir / "sim.log") if spec.has_similarity else {}
++    utmos = parse_utmos_log(logs_dir / "utmos.log") if spec.has_utmos else {}
++
++    if spec.wer_kind == "hubert":
++        wer = parse_hubert_wer_log(logs_dir / "wer.log")
++    elif spec.wer_kind == "seedtts":
++        wer = parse_seedtts_wer_log(logs_dir / "wer.log")
++    else:
++        wer = parse_multilingual_wer_log(logs_dir / "wer.log")
++
++    summary = {
++        "benchmark": spec.name,
++        "wer_average": wer.get("average"),
++        "wer_weighted": wer.get("weighted"),
++        "wer_macro_average": wer.get("macro_average"),
++        "wer_selected": wer.get("selected"),
++        "sim_average": sim.get("average"),
++        "sim_macro_average": sim.get("macro_average"),
++        "sim_selected": sim.get("selected"),
++        "utmos_average": utmos.get("average"),
++        "utmos_macro_average": utmos.get("macro_average"),
++        "utmos_selected": utmos.get("selected"),
++        "mean_latency_s": runtime.get("mean_latency_s"),
++        "mean_output_duration_s": runtime.get("mean_output_duration_s"),
++        "mean_real_time_factor": runtime.get("mean_real_time_factor"),
++        "max_rss_bytes": runtime.get("max_rss_bytes"),
++        "num_samples": runtime.get("num_samples"),
++        "artifacts": {
++            "benchmark_dir": str(benchmark_dir),
++            "wavs_dir": str(benchmark_dir / "wavs"),
++            "logs_dir": str(logs_dir),
++            "runtime_csv": str(_standard_runtime_csv_path(benchmark_dir)),
++            "runtime_summary": str(_standard_runtime_summary_path(benchmark_dir)),
++        },
++    }
++    _write_json(benchmark_dir / "summary.json", summary)
++    return summary
++
++
++def _compare_metric_rows(
++    benchmark: str,
++    baseline_summary: dict[str, Any],
++    candidate_summary: dict[str, Any],
++    baseline_label: str,
++    candidate_label: str,
++) -> list[dict[str, Any]]:
++    rows = []
++    for metric_name, direction in benchmark_primary_metrics(benchmark):
++        baseline_value = baseline_summary.get(metric_name)
++        candidate_value = candidate_summary.get(metric_name)
++        rows.append(
++            {
++                "benchmark": benchmark,
++                "metric": metric_name,
++                "direction": direction,
++                "baseline_label": baseline_label,
++                "baseline_value": baseline_value,
++                "candidate_label": candidate_label,
++                "candidate_value": candidate_value,
++                "winner": choose_winner(baseline_value, candidate_value, direction),
++            }
++        )
++    return rows
++
++
++def _render_report(
++    settings: dict[str, Any],
++    standard_rows: list[dict[str, Any]],
++    cloneval_rows: list[dict[str, Any]],
++    baseline_label: str,
++    candidate_label: str,
++) -> str:
++    def _format_rss(value: Optional[float]) -> str:
++        return "n/a" if value in (None, "") else str(int(value))
++
++    lines = [
++        "# Benchmark Comparison",
++        "",
++        f"- Baseline: `{baseline_label}`",
++        f"- Candidate: `{candidate_label}`",
++        (
++            f"- Shared inference settings: num_step={settings['num_step']}, "
++            f"guidance_scale={settings['guidance_scale']}, "
++            f"t_shift={settings['t_shift']}, "
++            f"batch_duration={settings['batch_duration']}"
++        ),
++        "",
++        "## Standard Benchmarks",
++        "",
++        "| Benchmark | Model | WER/CER | SIM-o | UTMOS | Mean RTF | Peak RSS (bytes) |",
++        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
++    ]
++
++    for row in standard_rows:
++        lines.append(
++            "| {benchmark} | {label} | {wer} | {sim} | {utmos} | {rtf} | {rss} |".format(
++                benchmark=row["benchmark"],
++                label=row["label"],
++                wer=format_metric(row.get("wer_selected"), 2),
++                sim=format_metric(row.get("sim_selected"), 4),
++                utmos=format_metric(row.get("utmos_selected"), 2),
++                rtf=format_metric(row.get("mean_real_time_factor"), 4),
++                rss=_format_rss(row.get("max_rss_bytes")),
++            )
++        )
++
++    if cloneval_rows:
++        lines.extend(
++            [
++                "",
++                "## CloneEval",
++                "",
++                "| Model | Speaker Similarity | Intelligibility | Naturalness | Emotion Transfer | Mean RTF | Peak RSS (bytes) |",
++                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
++            ]
++        )
++        for row in cloneval_rows:
++            lines.append(
++                "| {label} | {speaker_similarity} | {intelligibility} | {naturalness} | {emotion_transfer} | {rtf} | {rss} |".format(
++                    label=row["label"],
++                    speaker_similarity=format_metric(
++                        row.get("speaker_similarity"), 4
++                    ),
++                    intelligibility=format_metric(
++                        row.get("intelligibility"), 4
++                    ),
++                    naturalness=format_metric(row.get("naturalness"), 4),
++                    emotion_transfer=format_metric(
++                        row.get("emotion_transfer"), 4
++                    ),
++                    rtf=format_metric(row.get("mean_real_time_factor"), 4),
++                    rss=_format_rss(row.get("max_rss_bytes")),
++                )
++            )
++
++    scorecard = settings["primary_metric_scorecard"]
++    lines.extend(
++        [
++            "",
++            "## Primary Metric Scorecard",
++            "",
++            f"- {baseline_label}: {scorecard['baseline_wins']} wins",
++            f"- {candidate_label}: {scorecard['candidate_wins']} wins",
++            f"- Ties: {scorecard['ties']}",
++            f"- Unscored: {scorecard['unscored']}",
++        ]
++    )
++    return "\n".join(lines) + "\n"
++
++
++def _standard_summary_row(
++    label: str,
++    benchmark: str,
++    summary: dict[str, Any],
++) -> dict[str, Any]:
++    row = {
++        "label": label,
++        "benchmark": benchmark,
++        "wer_selected": summary.get("wer_selected"),
++        "sim_selected": summary.get("sim_selected"),
++        "utmos_selected": summary.get("utmos_selected"),
++        "mean_real_time_factor": summary.get("mean_real_time_factor"),
++        "max_rss_bytes": summary.get("max_rss_bytes"),
++    }
++    row.update(summary)
++    return row
++
++
++def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with path.open("w", encoding="utf-8", newline="") as f:
++        writer = csv.DictWriter(f, fieldnames=fieldnames)
++        writer.writeheader()
++        writer.writerows(rows)
++
++
++def _model_dir(output_dir: Path, label: str) -> Path:
++    return output_dir / _slugify(label)
++
++
++def _run_standard_benchmark(
++    repo_root: Path,
++    env: dict[str, str],
++    model_label: str,
++    model_path: str,
++    infer_module: str,
++    spec: BenchmarkSpec,
++    output_dir: Path,
++    eval_data_dir: Path,
++    eval_model_dir: Path,
++    args: argparse.Namespace,
++) -> dict[str, Any]:
++    benchmark_dir = _model_dir(output_dir, model_label) / spec.name
++    summary_path = benchmark_dir / "summary.json"
++    if args.skip_existing and summary_path.exists():
++        return json.loads(summary_path.read_text(encoding="utf-8"))
++
++    wavs_dir = benchmark_dir / "wavs"
++    logs_dir = benchmark_dir / "logs"
++    logs_dir.mkdir(parents=True, exist_ok=True)
++    wavs_dir.mkdir(parents=True, exist_ok=True)
++
++    if not args.render_only:
++        infer_cmd = [
++            sys.executable,
++            "-m",
++            infer_module,
++            "--model",
++            model_path,
++            "--test_list",
++            str(_benchmark_test_list(spec, eval_data_dir)),
++            "--res_dir",
++            str(wavs_dir),
++            "--num_step",
++            str(args.num_step),
++            "--guidance_scale",
++            str(args.guidance_scale),
++            "--t_shift",
++            str(args.t_shift),
++            "--nj_per_gpu",
++            str(args.infer_nj_per_gpu),
++            "--audio_chunk_duration",
++            str(args.audio_chunk_duration),
++            "--audio_chunk_threshold",
++            str(args.audio_chunk_threshold),
++            "--batch_duration",
++            str(args.batch_duration),
++            "--batch_size",
++            str(args.batch_size),
++            "--preprocess_prompt",
++            str(args.preprocess_prompt),
++            "--postprocess_output",
++            str(args.postprocess_output),
++            "--denoise",
++            str(args.denoise),
++            "--runtime_csv_path",
++            str(_standard_runtime_csv_path(benchmark_dir)),
++            "--runtime_summary_path",
++            str(_standard_runtime_summary_path(benchmark_dir)),
++        ]
++        _run_command(infer_cmd, cwd=repo_root, env=env)
++
++        if spec.has_similarity:
++            _run_command(
++                [
++                    sys.executable,
++                    "-m",
++                    "omnivoice.eval.speaker_similarity.sim",
++                    "--wav-path",
++                    str(wavs_dir),
++                    "--test-list",
++                    str(_benchmark_test_list(spec, eval_data_dir)),
++                    "--decode-path",
++                    str(logs_dir / "sim.log"),
++                    "--model-dir",
++                    str(eval_model_dir),
++                    "--nj-per-gpu",
++                    str(args.metric_nj_per_gpu),
++                ],
++                cwd=repo_root,
++                env=env,
++            )
++
++        if spec.wer_kind == "hubert":
++            wer_cmd = [
++                sys.executable,
++                "-m",
++                "omnivoice.eval.wer.hubert",
++                "--wav-path",
++                str(wavs_dir),
++                "--test-list",
++                str(_benchmark_transcript_test_list(spec, eval_data_dir)),
++                "--decode-path",
++                str(logs_dir / "wer.log"),
++                "--model-dir",
++                str(eval_model_dir),
++                "--nj-per-gpu",
++                str(args.metric_nj_per_gpu),
++            ]
++        elif spec.wer_kind == "seedtts":
++            wer_cmd = [
++                sys.executable,
++                "-m",
++                "omnivoice.eval.wer.seedtts",
++                "--wav-path",
++                str(wavs_dir),
++                "--test-list",
++                str(_benchmark_test_list(spec, eval_data_dir)),
++                "--decode-path",
++                str(logs_dir / "wer.log"),
++                "--model-dir",
++                str(eval_model_dir),
++                "--lang",
++                str(spec.seedtts_lang),
++                "--nj-per-gpu",
++                str(args.metric_nj_per_gpu),
++            ]
++        elif spec.wer_kind == "multilingual":
++            wer_cmd = [
++                sys.executable,
++                "-m",
++                "omnivoice.eval.wer.minimax",
++                "--wav-path",
++                str(wavs_dir),
++                "--test-list",
++                str(_benchmark_test_list(spec, eval_data_dir)),
++                "--decode-path",
++                str(logs_dir / "wer.log"),
++                "--model-dir",
++                str(eval_model_dir),
++                "--nj-per-gpu",
++                str(args.metric_nj_per_gpu),
++            ]
++        else:
++            wer_cmd = [
++                args.fleurs_python,
++                str(repo_root / "omnivoice" / "eval" / "wer" / "fleurs.py"),
++                "--wav-path",
++                str(wavs_dir),
++                "--test-list",
++                str(_benchmark_test_list(spec, eval_data_dir)),
++                "--decode-path",
++                str(logs_dir / "wer.log"),
++                "--model-card",
++                str(args.fleurs_model_card),
++                "--chunk-size",
++                str(args.fleurs_chunk_size),
++                "--batch-size",
++                str(args.fleurs_batch_size),
++                "--nj-per-gpu",
++                str(args.metric_nj_per_gpu),
++            ]
++        _run_command(wer_cmd, cwd=repo_root, env=env)
++
++        if spec.has_utmos:
++            _run_command(
++                [
++                    sys.executable,
++                    "-m",
++                    "omnivoice.eval.mos.utmos",
++                    "--wav-path",
++                    str(wavs_dir),
++                    "--test-list",
++                    str(_benchmark_test_list(spec, eval_data_dir)),
++                    "--decode-path",
++                    str(logs_dir / "utmos.log"),
++                    "--model-dir",
++                    str(eval_model_dir),
++                    "--nj-per-gpu",
++                    str(args.metric_nj_per_gpu),
++                ],
++                cwd=repo_root,
++                env=env,
++            )
++
++    return _parse_standard_summary(spec, benchmark_dir)
++
++
++def _run_cloneval(
++    repo_root: Path,
++    env: dict[str, str],
++    model_label: str,
++    model_path: str,
++    cloneval_module: str,
++    output_dir: Path,
++    args: argparse.Namespace,
++) -> dict[str, Any]:
++    cloneval_dir = _model_dir(output_dir, model_label) / "cloneval"
++    summary_path = cloneval_dir / "summary.json"
++    if args.skip_existing and summary_path.exists():
++        return json.loads(summary_path.read_text(encoding="utf-8"))
++
++    if not args.render_only:
++        cloneval_test_list = Path(args.cloneval_test_list)
++        if not cloneval_test_list.is_absolute():
++            cloneval_test_list = (repo_root / cloneval_test_list).resolve()
++        cloneval_repo = Path(args.cloneval_repo)
++        if not cloneval_repo.is_absolute():
++            cloneval_repo = (repo_root / cloneval_repo).resolve()
++        cmd = [
++            sys.executable,
++            "-m",
++            cloneval_module,
++            "--model",
++            model_path,
++            "--test_list",
++            str(cloneval_test_list),
++            "--work_dir",
++            str(cloneval_dir),
++            "--cloneval_repo",
++            str(cloneval_repo),
++            "--num_step",
++            str(args.num_step),
++            "--guidance_scale",
++            str(args.guidance_scale),
++            "--t_shift",
++            str(args.t_shift),
++            "--device_map",
++            str(args.cloneval_device_map),
++            "--dtype",
++            str(args.cloneval_dtype),
++        ]
++        if args.cloneval_emotion_transfer:
++            cmd.append("--evaluate_emotion_transfer")
++        _run_command(cmd, cwd=repo_root, env=env)
++
++    summary = summarize_cloneval_metrics(cloneval_dir / "metrics")
++    summary["benchmark"] = "cloneval"
++    summary["artifacts"] = {
++        "benchmark_dir": str(cloneval_dir),
++        "metrics_dir": str(cloneval_dir / "metrics"),
++    }
++    _write_json(summary_path, summary)
++    return summary
++
++
++def _scorecard(metric_rows: list[dict[str, Any]]) -> dict[str, int]:
++    scorecard = {
++        "baseline_wins": 0,
++        "candidate_wins": 0,
++        "ties": 0,
++        "unscored": 0,
++    }
++    for row in metric_rows:
++        winner = row["winner"]
++        if winner == "baseline":
++            scorecard["baseline_wins"] += 1
++        elif winner == "candidate":
++            scorecard["candidate_wins"] += 1
++        elif winner == "tie":
++            scorecard["ties"] += 1
++        else:
++            scorecard["unscored"] += 1
++    return scorecard
++
++
++def main() -> None:
++    parser = get_parser()
++    args = parser.parse_args()
++
++    logging.basicConfig(
++        format="%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s",
++        level=logging.INFO,
++        force=True,
++    )
++
++    repo_root = Path(__file__).resolve().parents[2]
++    output_dir = (repo_root / args.output_dir).resolve()
++    eval_data_dir = (repo_root / args.eval_data_dir).resolve()
++    eval_model_dir = (repo_root / args.eval_model_dir).resolve()
++    env = _repo_env(repo_root)
++
++    if args.prepare_assets and not args.render_only:
++        prepare_eval_assets(repo_root, eval_data_dir, eval_model_dir, env)
++
++    baseline_summaries = {}
++    candidate_summaries = {}
++    standard_rows = []
++
++    for benchmark in args.benchmarks:
++        spec = BENCHMARK_SPECS[benchmark]
++        baseline_summary = _run_standard_benchmark(
++            repo_root=repo_root,
++            env=env,
++            model_label=args.baseline_label,
++            model_path=args.baseline_model,
++            infer_module=args.baseline_infer_module,
++            spec=spec,
++            output_dir=output_dir,
++            eval_data_dir=eval_data_dir,
++            eval_model_dir=eval_model_dir,
++            args=args,
++        )
++        candidate_summary = _run_standard_benchmark(
++            repo_root=repo_root,
++            env=env,
++            model_label=args.candidate_label,
++            model_path=args.candidate_model,
++            infer_module=args.candidate_infer_module,
++            spec=spec,
++            output_dir=output_dir,
++            eval_data_dir=eval_data_dir,
++            eval_model_dir=eval_model_dir,
++            args=args,
++        )
++        baseline_summaries[benchmark] = baseline_summary
++        candidate_summaries[benchmark] = candidate_summary
++        standard_rows.append(
++            _standard_summary_row(args.baseline_label, benchmark, baseline_summary)
++        )
++        standard_rows.append(
++            _standard_summary_row(args.candidate_label, benchmark, candidate_summary)
++        )
++
++    cloneval_rows = []
++    metric_rows = []
++    for benchmark in args.benchmarks:
++        metric_rows.extend(
++            _compare_metric_rows(
++                benchmark=benchmark,
++                baseline_summary=baseline_summaries[benchmark],
++                candidate_summary=candidate_summaries[benchmark],
++                baseline_label=args.baseline_label,
++                candidate_label=args.candidate_label,
++            )
++        )
++
++    if args.cloneval_test_list:
++        baseline_cloneval = _run_cloneval(
++            repo_root=repo_root,
++            env=env,
++            model_label=args.baseline_label,
++            model_path=args.baseline_model,
++            cloneval_module=args.baseline_cloneval_module,
++            output_dir=output_dir,
++            args=args,
++        )
++        candidate_cloneval = _run_cloneval(
++            repo_root=repo_root,
++            env=env,
++            model_label=args.candidate_label,
++            model_path=args.candidate_model,
++            cloneval_module=args.candidate_cloneval_module,
++            output_dir=output_dir,
++            args=args,
++        )
++        baseline_cloneval["label"] = args.baseline_label
++        candidate_cloneval["label"] = args.candidate_label
++        cloneval_rows = [baseline_cloneval, candidate_cloneval]
++        metric_rows.extend(
++            _compare_metric_rows(
++                benchmark="cloneval",
++                baseline_summary=baseline_cloneval,
++                candidate_summary=candidate_cloneval,
++                baseline_label=args.baseline_label,
++                candidate_label=args.candidate_label,
++            )
++        )
++
++    scorecard = _scorecard(metric_rows)
++    settings = {
++        "baseline_model": args.baseline_model,
++        "candidate_model": args.candidate_model,
++        "num_step": args.num_step,
++        "guidance_scale": args.guidance_scale,
++        "t_shift": args.t_shift,
++        "batch_duration": args.batch_duration,
++        "primary_metric_scorecard": scorecard,
++    }
++
++    comparison_dir = output_dir / "comparison"
++    comparison_dir.mkdir(parents=True, exist_ok=True)
++
++    summary_json = {
++        "settings": settings,
++        "standard_benchmarks": {
++            benchmark: {
++                args.baseline_label: baseline_summaries[benchmark],
++                args.candidate_label: candidate_summaries[benchmark],
++            }
++            for benchmark in args.benchmarks
++        },
++        "cloneval": {
++            args.baseline_label: cloneval_rows[0] if cloneval_rows else None,
++            args.candidate_label: cloneval_rows[1] if len(cloneval_rows) > 1 else None,
++        },
++        "primary_metric_rows": metric_rows,
++    }
++    _write_json(comparison_dir / "benchmark_summary.json", summary_json)
++
++    csv_rows = []
++    for row in standard_rows:
++        csv_rows.append(
++            {
++                "benchmark": row["benchmark"],
++                "label": row["label"],
++                "wer_selected": row.get("wer_selected"),
++                "sim_selected": row.get("sim_selected"),
++                "utmos_selected": row.get("utmos_selected"),
++                "mean_real_time_factor": row.get("mean_real_time_factor"),
++                "max_rss_bytes": row.get("max_rss_bytes"),
++            }
++        )
++    for row in cloneval_rows:
++        csv_rows.append(
++            {
++                "benchmark": "cloneval",
++                "label": row["label"],
++                "wer_selected": None,
++                "sim_selected": None,
++                "utmos_selected": None,
++                "speaker_similarity": row.get("speaker_similarity"),
++                "intelligibility": row.get("intelligibility"),
++                "naturalness": row.get("naturalness"),
++                "emotion_transfer": row.get("emotion_transfer"),
++                "mean_real_time_factor": row.get("mean_real_time_factor"),
++                "max_rss_bytes": row.get("max_rss_bytes"),
++            }
++        )
++    _write_csv(
++        comparison_dir / "benchmark_summary.csv",
++        csv_rows,
++        fieldnames=[
++            "benchmark",
++            "label",
++            "wer_selected",
++            "sim_selected",
++            "utmos_selected",
++            "speaker_similarity",
++            "intelligibility",
++            "naturalness",
++            "emotion_transfer",
++            "mean_real_time_factor",
++            "max_rss_bytes",
++        ],
++    )
++    _write_csv(
++        comparison_dir / "primary_metric_scorecard.csv",
++        metric_rows,
++        fieldnames=[
++            "benchmark",
++            "metric",
++            "direction",
++            "baseline_label",
++            "baseline_value",
++            "candidate_label",
++            "candidate_value",
++            "winner",
++        ],
++    )
++
++    report = _render_report(
++        settings=settings,
++        standard_rows=standard_rows,
++        cloneval_rows=cloneval_rows,
++        baseline_label=args.baseline_label,
++        candidate_label=args.candidate_label,
++    )
++    (comparison_dir / "report.md").write_text(report, encoding="utf-8")
++    logging.info("Wrote comparison artifacts to %s", comparison_dir)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/omnivoice/training/builder.py b/omnivoice/training/builder.py
+index fa1867b..6e91bab 100644
+--- a/omnivoice/training/builder.py
++++ b/omnivoice/training/builder.py
+@@ -99,9 +99,9 @@ def build_model_and_tokenizer(
+             speaker_loss_weight=config.speaker_loss_weight,
+             memory_conditioning_num_heads=config.memory_conditioning_num_heads,
+             memory_conditioning_dropout=config.memory_conditioning_dropout,
+-            mnemosvoice_use_speaker_memory=config.mnemosvoice_use_speaker_memory,
+-            mnemosvoice_use_prosody_planner=config.mnemosvoice_use_prosody_planner,
+-            mnemosvoice_use_speaker_consistency_loss=config.mnemosvoice_use_speaker_consistency_loss,
++            aoede_use_speaker_memory=config.aoede_use_speaker_memory,
++            aoede_use_prosody_planner=config.aoede_use_prosody_planner,
++            aoede_use_speaker_consistency_loss=config.aoede_use_speaker_consistency_loss,
+             llm_config=llm_config,
+         )
+ 
+diff --git a/omnivoice/training/config.py b/omnivoice/training/config.py
+index d2014c0..06ff057 100644
+--- a/omnivoice/training/config.py
++++ b/omnivoice/training/config.py
+@@ -45,9 +45,9 @@ class TrainingConfig:
+     speaker_loss_weight: float = 0.05
+     memory_conditioning_num_heads: int = 8
+     memory_conditioning_dropout: float = 0.1
+-    mnemosvoice_use_speaker_memory: bool = True
+-    mnemosvoice_use_prosody_planner: bool = True
+-    mnemosvoice_use_speaker_consistency_loss: bool = True
++    aoede_use_speaker_memory: bool = True
++    aoede_use_prosody_planner: bool = True
++    aoede_use_speaker_consistency_loss: bool = True
+ 
+     # Model Training Specific
+     audio_codebook_weights: List[float | int] = field(
+@@ -97,6 +97,16 @@ class TrainingConfig:
+     def from_json(cls, json_path: str):
+         with open(json_path, "r") as f:
+             cfg_dict = json.load(f)
++        legacy_key_map = {
++            "mnemosvoice_use_speaker_memory": "aoede_use_speaker_memory",
++            "mnemosvoice_use_prosody_planner": "aoede_use_prosody_planner",
++            "mnemosvoice_use_speaker_consistency_loss": "aoede_use_speaker_consistency_loss",
++        }
++        for legacy_key, new_key in legacy_key_map.items():
++            if legacy_key in cfg_dict and new_key not in cfg_dict:
++                cfg_dict[new_key] = cfg_dict[legacy_key]
++        if cfg_dict.get("architecture_variant") == "mnemosvoice":
++            cfg_dict["architecture_variant"] = "aoede"
+         valid_keys = cls.__annotations__.keys()
+         filtered_dict = {k: v for k, v in cfg_dict.items() if k in valid_keys}
+         instance = cls(**filtered_dict)
+diff --git a/pyproject.toml b/pyproject.toml
+index 9dae88e..6fa71d8 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -65,6 +65,7 @@ omnivoice-infer = "omnivoice.cli.infer:main"
+ omnivoice-infer-batch = "omnivoice.cli.infer_batch:main"
+ omnivoice-demo = "omnivoice.cli.demo:main"
+ omnivoice-cloneval = "omnivoice.eval.cloneval_benchmark:main"
++omnivoice-benchmark-compare = "omnivoice.scripts.benchmark_compare:main"
+ omnivoice-build-hf-manifests = "omnivoice.scripts.build_hf_manifests:main"
+ omnivoice-orchestrate-tokenization = "omnivoice.scripts.orchestrate_tokenization:main"
+ omnivoice-render-cloneval = "omnivoice.scripts.render_cloneval_report:main"
+diff --git a/tests/test_mnemosvoice.py b/tests/test_aoede.py
+similarity index 98%
+rename from tests/test_mnemosvoice.py
+rename to tests/test_aoede.py
+index 879ec40..8e66124 100644
+--- a/tests/test_mnemosvoice.py
++++ b/tests/test_aoede.py
+@@ -63,7 +63,7 @@ def build_model():
+         audio_mask_id=16,
+         num_audio_codebook=2,
+         audio_codebook_weights=[1, 1],
+-        architecture_variant="mnemosvoice",
++        architecture_variant="aoede",
+         speaker_memory_num_tokens=4,
+         planner_stride=2,
+         planner_loss_weight=0.2,
+@@ -77,7 +77,7 @@ def build_model():
+     return model
+ 
+ 
+-def test_mnemosvoice_forward_reports_aux_losses():
++def test_aoede_forward_reports_aux_losses():
+     model = build_model()
+ 
+     input_ids = torch.tensor(
+diff --git a/tests/test_benchmark_summary.py b/tests/test_benchmark_summary.py
+new file mode 100644
+index 0000000..b794376
+--- /dev/null
++++ b/tests/test_benchmark_summary.py
+@@ -0,0 +1,117 @@
++from pathlib import Path
++
++from omnivoice.eval.benchmark_summary import (
++    choose_winner,
++    parse_hubert_wer_log,
++    parse_multilingual_wer_log,
++    parse_runtime_summary,
++    parse_seedtts_wer_log,
++    parse_sim_log,
++    parse_utmos_log,
++    summarize_cloneval_metrics,
++)
++from omnivoice.scripts.benchmark_compare import get_parser
++
++
++def test_parse_sim_and_utmos_logs(tmp_path: Path):
++    sim_log = tmp_path / "sim.log"
++    sim_log.write_text(
++        "[English] SIM-o: 0.700 (10 pairs)\n"
++        "Macro-average SIM-o over 2 languages: 0.765\n"
++        "Average SIM-o: 0.742\n",
++        encoding="utf-8",
++    )
++    utmos_log = tmp_path / "utmos.log"
++    utmos_log.write_text(
++        "[English] UTMOS: 4.12 (10 samples)\n"
++        "Macro-average UTMOS over 2 languages: 4.08\n"
++        "Average UTMOS: 4.15\n",
++        encoding="utf-8",
++    )
++
++    sim = parse_sim_log(sim_log)
++    utmos = parse_utmos_log(utmos_log)
++
++    assert sim["average"] == 0.742
++    assert sim["macro_average"] == 0.765
++    assert sim["selected"] == 0.765
++    assert utmos["average"] == 4.15
++    assert utmos["macro_average"] == 4.08
++    assert utmos["selected"] == 4.08
++
++
++def test_parse_wer_logs(tmp_path: Path):
++    hubert_log = tmp_path / "hubert.log"
++    hubert_log.write_text("WER: 1.30%\n", encoding="utf-8")
++    seedtts_log = tmp_path / "seedtts.log"
++    seedtts_log.write_text(
++        "Seed-TTS WER (Avg of WERs): 1.62%\nWER (Weighted): 1.57%\n",
++        encoding="utf-8",
++    )
++    multilingual_log = tmp_path / "minimax.log"
++    multilingual_log.write_text(
++        "[French] WER: 3.20%\n"
++        "Macro-average WER over 24 languages: 2.85%\n"
++        "Overall WER: 2.91%\n",
++        encoding="utf-8",
++    )
++
++    hubert = parse_hubert_wer_log(hubert_log)
++    seedtts = parse_seedtts_wer_log(seedtts_log)
++    multilingual = parse_multilingual_wer_log(multilingual_log)
++
++    assert hubert["selected"] == 1.30
++    assert seedtts["average"] == 1.62
++    assert seedtts["weighted"] == 1.57
++    assert seedtts["selected"] == 1.57
++    assert multilingual["macro_average"] == 2.85
++    assert multilingual["weighted"] == 2.91
++    assert multilingual["selected"] == 2.85
++
++
++def test_parse_runtime_and_cloneval_summary(tmp_path: Path):
++    runtime_summary = tmp_path / "runtime_metrics.summary.json"
++    runtime_summary.write_text(
++        (
++            "{\n"
++            '  "num_samples": 2,\n'
++            '  "mean_latency_s": 0.5,\n'
++            '  "mean_output_duration_s": 2.0,\n'
++            '  "mean_real_time_factor": 0.25,\n'
++            '  "max_peak_rss_bytes": 12345\n'
++            "}\n"
++        ),
++        encoding="utf-8",
++    )
++    aggregated = tmp_path / "aggregated_results.csv"
++    aggregated.write_text(
++        "speaker_similarity,intelligibility,naturalness,emotion_transfer\n"
++        "0.8,0.7,0.6,0.5\n"
++        "0.6,0.9,0.8,0.4\n",
++        encoding="utf-8",
++    )
++
++    runtime = parse_runtime_summary(runtime_summary)
++    cloneval = summarize_cloneval_metrics(tmp_path)
++
++    assert runtime["max_rss_bytes"] == 12345
++    assert cloneval["speaker_similarity"] == 0.7
++    assert cloneval["intelligibility"] == 0.8
++    assert cloneval["naturalness"] == 0.7
++    assert cloneval["emotion_transfer"] == 0.45
++    assert cloneval["mean_real_time_factor"] == 0.25
++
++
++def test_choose_winner_respects_metric_direction():
++    assert choose_winner(1.5, 1.2, "lower") == "candidate"
++    assert choose_winner(0.8, 0.9, "higher") == "candidate"
++    assert choose_winner(0.8, 0.8, "higher") == "tie"
++    assert choose_winner(None, 0.8, "higher") == "n/a"
++
++
++def test_benchmark_compare_defaults_match_repo_download_layout():
++    parser = get_parser()
++    args = parser.parse_args(["--candidate-model", "candidate"])
++
++    assert args.eval_data_dir == "download/tts_eval_datasets"
++    assert args.eval_model_dir == "download/tts_eval_models"

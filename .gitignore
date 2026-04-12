@@ -32,6 +32,7 @@ build/
 .next/
 
 # Logs / temp files
+.nvimlog
 *.log
 tmp/
 temp/

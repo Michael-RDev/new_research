@@ -7,6 +7,11 @@ from typing import Tuple, Union
 
 import numpy as np
 
+try:
+    import soundfile as sf
+except ImportError:  # pragma: no cover - optional dependency
+    sf = None
+
 
 def resample_audio(audio: np.ndarray, source_sr: int, target_sr: int):
     if source_sr == target_sr:
@@ -39,7 +44,13 @@ def _read_wave_stream(handle: io.BufferedIOBase):
 
 
 def load_audio_bytes(data: bytes, target_sample_rate: int = 24000):
-    audio, source_sr = _read_wave_stream(io.BytesIO(data))
+    if sf is not None:
+        audio, source_sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=False)
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+    else:
+        audio, source_sr = _read_wave_stream(io.BytesIO(data))
     audio = resample_audio(audio, source_sr, target_sample_rate)
     peak = float(np.max(np.abs(audio))) if len(audio) else 1.0
     if peak > 0:
@@ -48,6 +59,16 @@ def load_audio_bytes(data: bytes, target_sample_rate: int = 24000):
 
 
 def load_audio_file(path: Union[Path, str], target_sample_rate: int = 24000):
+    if sf is not None:
+        audio, source_sr = sf.read(str(path), dtype="float32", always_2d=False)
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        audio = resample_audio(audio, source_sr, target_sample_rate)
+        peak = float(np.max(np.abs(audio))) if len(audio) else 1.0
+        if peak > 0:
+            audio = audio / peak
+        return audio.astype(np.float32), target_sample_rate
     with Path(path).open("rb") as handle:
         return load_audio_bytes(handle.read(), target_sample_rate=target_sample_rate)
 

@@ -34,6 +34,10 @@ dev = [
 
 [project.scripts]
 aoede-api = "aoede.api.app:run"
+aoede-prepare-hf = "aoede.data.huggingface:main"
+aoede-infer-batch = "aoede.eval.infer_batch:main"
+aoede-cloneval = "aoede.eval.cloneval_benchmark:main"
+aoede-runpod-dual = "aoede.runpod.dual_pod_launcher:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aoede"]

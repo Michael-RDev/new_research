@@ -9,7 +9,14 @@ from typing import Iterable, List, Optional
 CORPUS_PLAN = {
     "production": {
         "mls": ["en", "de", "es", "fr", "it", "nl", "pl", "pt"],
-        "common_voice": ["ru", "tr", "ar", "hi", "id", "vi", "sw", "zh"],
+        "fleurs": ["en", "es", "hi", "zh"],
+        "peoples_speech": ["en"],
+    },
+    "voice_cloning": {
+        "waxalnlp": ["wo"],
+        "emilia_dataset": ["de", "en", "fr", "ja", "ko", "zh"],
+        "emilia_nv": ["zh"],
+        "parler_mls_eng_10k": ["en"],
     },
     "evaluation": {"fleurs": ["en", "es", "hi", "zh"]},
 }

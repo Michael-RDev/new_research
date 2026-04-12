@@ -22,6 +22,15 @@ class ModelConfig:
     max_text_tokens: int = 512
     max_latent_frames: int = 1200
     duration_predictor_layers: int = 4
+    architecture_variant: str = "baseline"
+    speaker_memory_tokens: int = 8
+    planner_stride: int = 4
+    planner_dim: int = 128
+    memory_conditioning_heads: int = 6
+    composer_layers: int = 2
+    memory_dropout: float = 0.1
+    planner_loss_weight: float = 0.1
+    memory_speaker_loss_weight: float = 0.1
 
 
 @dataclass
@@ -59,6 +68,7 @@ class ArtifactsConfig:
     tokenizer_path: Path = Path("artifacts/tokenizer.json")
     manifest_dir: Path = Path("artifacts/manifests")
     cache_dir: Path = Path("artifacts/cache")
+    datasets_dir: Path = Path("artifacts/datasets")
 
     def ensure(self, base_dir: Path):
         for rel_path in (
@@ -67,6 +77,7 @@ class ArtifactsConfig:
             self.checkpoints_dir,
             self.manifest_dir,
             self.cache_dir,
+            self.datasets_dir,
         ):
             (base_dir / rel_path).mkdir(parents=True, exist_ok=True)
         tokenizer_parent = (base_dir / self.tokenizer_path).parent

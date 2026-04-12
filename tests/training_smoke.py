@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from aoede.config import AppConfig, ModelConfig, TrainingConfig
 from aoede.audio.codec import FrozenAudioCodec
+from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.data.dataset import ManifestDataset, collate_training_examples
 from aoede.data.manifest import ManifestEntry
 from aoede.model.core import AoedeModel
@@ -47,9 +48,17 @@ def main():
                 n_heads=4,
                 n_text_layers=3,
                 n_decoder_layers=3,
+                style_dim=24,
+                speaker_dim=48,
                 codec_latent_dim=48,
                 max_text_tokens=64,
                 max_latent_frames=80,
+                architecture_variant="atlasflow",
+                speaker_memory_tokens=4,
+                planner_stride=4,
+                planner_dim=32,
+                memory_conditioning_heads=4,
+                composer_layers=2,
             ),
             training=TrainingConfig(batch_size=2, mixed_precision=False),
         )
@@ -62,10 +71,18 @@ def main():
             hop_length=config.model.codec_hop_length,
         )
         entries = [
-            ManifestEntry(item_id="a", audio_path=str(audio_a), text="hello world", language_code="en"),
+            ManifestEntry(item_id="a", audio_path=str(audio_a), text="hello world", language_code="en", speaker_ref=str(audio_b)),
             ManifestEntry(item_id="b", audio_path=str(audio_b), text="hola mundo", language_code="es"),
         ]
-        dataset = ManifestDataset(entries, tokenizer=tokenizer, codec=codec, cache_dir=root / "cache")
+        dataset = ManifestDataset(
+            entries,
+            tokenizer=tokenizer,
+            codec=codec,
+            speaker_encoder=FrozenSpeakerEncoder(embedding_dim=config.model.speaker_dim),
+            cache_dir=root / "cache",
+            planner_stride=config.model.planner_stride,
+            planner_dim=config.model.planner_dim,
+        )
         batch = collate_training_examples([dataset[0], dataset[1]])
 
         model = AoedeModel(config.model)
@@ -73,6 +90,9 @@ def main():
         metrics = trainer.train_step(batch)
 
         assert metrics["loss"] > 0
+        assert "planner_loss" in metrics
+        assert "memory_speaker_loss" in metrics
+        assert batch["has_reference"].tolist() == [True, False]
         print("training smoke test passed")
 
 

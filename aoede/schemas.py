@@ -25,6 +25,8 @@ class VoiceProfile(BaseModel):
     preset: str = "neutral"
     speaker_embedding: List[float]
     style_latent: List[float]
+    speaker_memory: Optional[List[List[float]]] = None
+    speaker_summary: Optional[List[float]] = None
     language_priors: Dict[str, float] = Field(default_factory=dict)
     metadata: Dict[str, str] = Field(default_factory=dict)
     controls: StyleControls = Field(default_factory=StyleControls)

@@ -186,15 +186,30 @@ class TorchRuntime:
         audio, sample_rate = load_audio_bytes(audio_bytes, target_sample_rate=self.config.model.sample_rate)
         speaker_embedding = self.speaker_encoder.encode(audio, sample_rate=sample_rate)
         waveform = self.torch.from_numpy(audio).float().unsqueeze(0).to(self.device)
+        speaker_memory = None
+        speaker_summary = None
         with self.torch.no_grad():
             latents = self.model.codec.encode(waveform)
             style_latent = self.model.infer_style(latents).cpu().numpy()[0]
+            if self.model._atlasflow_enabled:
+                reference_mask = self.torch.ones(
+                    latents.shape[:2],
+                    dtype=self.torch.bool,
+                    device=latents.device,
+                )
+                memory, summary, _ = self.model.infer_reference_memory(latents, reference_mask)
+                if memory is not None:
+                    speaker_memory = memory[0].detach().cpu().tolist()
+                if summary is not None:
+                    speaker_summary = summary[0].detach().cpu().tolist()
         return VoiceProfile(
             voice_id=voice_id or uuid.uuid4().hex,
             source="enrollment",
             preset="neutral",
             speaker_embedding=speaker_embedding.tolist(),
             style_latent=style_latent.tolist(),
+            speaker_memory=speaker_memory,
+            speaker_summary=speaker_summary,
             language_priors={spec.code: 1.0 for spec in production_languages()},
             metadata=metadata,
         )
@@ -216,12 +231,30 @@ class TorchRuntime:
         styled[1] += controls.pace - 1.0
         styled[2] += controls.energy - 1.0
         styled[3] += controls.brightness - 1.0
+        speaker_memory = None
+        speaker_summary = None
+        if base_profile is not None:
+            speaker_memory = base_profile.speaker_memory
+            if base_profile.speaker_summary is not None:
+                speaker_summary = base_profile.speaker_summary
+            elif self.model._atlasflow_enabled:
+                speaker_summary = _hash_vector(
+                    f"{base_profile.voice_id}-summary",
+                    self.config.model.d_model,
+                ).tolist()
+        elif self.model._atlasflow_enabled:
+            speaker_summary = _hash_vector(
+                f"{request.preset}-summary",
+                self.config.model.d_model,
+            ).tolist()
         return VoiceProfile(
             voice_id=request.voice_id or uuid.uuid4().hex,
             source="designed",
             preset=request.preset,
             speaker_embedding=(base_speaker / (np.linalg.norm(base_speaker) or 1.0)).tolist(),
             style_latent=styled.tolist(),
+            speaker_memory=speaker_memory,
+            speaker_summary=speaker_summary,
             language_priors=request.language_priors or {spec.code: 1.0 for spec in production_languages()},
             metadata=request.metadata,
             controls=request.style_controls,
@@ -246,6 +279,20 @@ class TorchRuntime:
         style_latent[2] += controls.energy - 1.0
         style_latent[3] += controls.brightness - 1.0
         style_tensor = self.torch.tensor([style_latent.tolist()], dtype=self.torch.float32, device=self.device)
+        speaker_memory = None
+        speaker_summary = None
+        if self.model._atlasflow_enabled and profile.speaker_memory is not None:
+            speaker_memory = self.torch.tensor(
+                [profile.speaker_memory],
+                dtype=self.torch.float32,
+                device=self.device,
+            )
+        if self.model._atlasflow_enabled and profile.speaker_summary is not None:
+            speaker_summary = self.torch.tensor(
+                [profile.speaker_summary],
+                dtype=self.torch.float32,
+                device=self.device,
+            )
 
         with self.torch.no_grad():
             waveform, _ = self.model.synthesize(
@@ -254,6 +301,8 @@ class TorchRuntime:
                 speaker_embedding=speaker_embedding,
                 style_latent=style_tensor,
                 sampling_steps=request.sampling_steps,
+                speaker_memory=speaker_memory,
+                speaker_summary=speaker_summary,
             )
         return waveform[0].detach().cpu().numpy().astype(np.float32)
 

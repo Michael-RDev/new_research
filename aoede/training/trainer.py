@@ -43,6 +43,10 @@ class Trainer:
                 speaker_embedding=tensor_batch["speaker_ref"],
                 target_latents=tensor_batch["codec_latents"],
                 target_durations=tensor_batch["durations"],
+                reference_latents=tensor_batch.get("reference_latents"),
+                reference_mask=tensor_batch.get("reference_mask"),
+                prosody_targets=tensor_batch.get("prosody_targets"),
+                has_reference=tensor_batch.get("has_reference"),
             )
         output["loss"].backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.grad_clip)

@@ -29,7 +29,6 @@ model scaffold, and a React + FastAPI demo surface.
 
 - `aoede/`: backend package
 - `apps/web/`: React demo
-- `legacy/assets_prototype/`: preserved original prototype
 - `tests/`: API and unit coverage plus a Torch smoke script
 
 ## Quick start
@@ -45,6 +44,41 @@ python -m aoede.api.app
 ```bash
 /Users/michael/Desktop/new_research/.venv_arm64/bin/python tests/model_smoke.py
 ```
+
+### Prepare Hugging Face training data
+
+Aoede now includes a manifest builder for Hugging Face speech corpora. It can
+materialize local WAV files under `artifacts/datasets/hf_audio/`, write merged
+Aoede manifests to `artifacts/manifests/train.jsonl` and
+`artifacts/manifests/eval.jsonl`, and fit a tokenizer from the resulting text.
+
+```bash
+aoede-prepare-hf
+```
+
+The built-in AtlasFlow mix includes:
+
+- `galsenai/WaxalNLP`
+- `MLCommons/peoples_speech`
+- `amphion/Emilia-NV`
+- `amphion/Emilia-Dataset`
+- `google/fleurs`
+- `facebook/multilingual_librispeech`
+- `parler-tts/mls_eng_10k`
+
+Notes:
+
+- `amphion/Emilia-NV` requires accepting Hugging Face access terms and is
+  research/non-commercial only.
+- `amphion/Emilia-Dataset` is the multilingual Emilia / Emilia-YODAS
+  WebDataset stream used for staged training. Review its dataset card access
+  terms carefully because licensing varies across included subsets.
+- Some corpora expose explicit `speaker_id` values and Aoede will link a
+  `speaker_ref` clip automatically. Others fall back to Aoede's same-utterance
+  reference slice for AtlasFlow training.
+- You can override the built-in mix with repeated
+  `--source source_id[:config_name[:split]]` arguments, including
+  `--source emilia_dataset`.
 
 ### Frontend
 

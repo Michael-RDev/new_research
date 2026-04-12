@@ -45,6 +45,7 @@ _EXPERIMENTAL = [
     LanguageSpec("fa", "Persian", "Indo-European", "Arabic", False),
     LanguageSpec("bn", "Bengali", "Indo-European", "Bengali", False),
     LanguageSpec("ta", "Tamil", "Dravidian", "Tamil", False),
+    LanguageSpec("wo", "Wolof", "Niger-Congo", "Latin", False),
     LanguageSpec("yo", "Yoruba", "Niger-Congo", "Latin", False),
 ]
 
