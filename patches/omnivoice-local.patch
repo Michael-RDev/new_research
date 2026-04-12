@@ -106,6 +106,416 @@ index 71902b2..91904d1 100644
 -Neural network that predicts Mean Opinion Score from audio. Higher is better.
 \ No newline at end of file
 +Neural network that predicts Mean Opinion Score from audio. Higher is better.
+diff --git a/docs/mnemosvoice_cloneeval_report.md b/docs/mnemosvoice_cloneeval_report.md
+new file mode 100644
+index 0000000..1066598
+--- /dev/null
++++ b/docs/mnemosvoice_cloneeval_report.md
+@@ -0,0 +1,250 @@
++# OmniVoice to MnemosVoice: CloneEval-Focused Research Plan
++
++## 1. Baseline OmniVoice Analysis
++
++OmniVoice is a discrete masked audio-token TTS model built on top of a
++pretrained causal/non-causal LLM backbone. The text path uses the base LLM
++tokenizer with additional special tokens for language, instruction, denoising,
++and text boundaries. The acoustic path uses `HiggsAudioV2TokenizerModel` and
++predicts 8 codebooks of discrete audio tokens directly rather than generating
++semantic tokens and then acoustic tokens in two stages.
++
++The baseline voice-cloning mechanism is entirely prompt-based: reference audio
++tokens and reference text are prepended to the target masked region, and the
++model learns to iteratively fill in the target audio tokens with classifier-free
++guidance between conditional and unconditional branches. Training uses masked
++cross-entropy over only the masked target audio tokens, with codebook-specific
++weights. Multilingual conditioning is handled with text-side language tags and a
++large 646-language training mixture; duration is estimated at inference time
++with a Unicode-aware heuristic rather than a learned duration module.
++
++Likely CloneEval bottlenecks:
++
++- Speaker identity is only provided implicitly through prompt audio tokens.
++- There is no explicit persistent speaker memory separate from the prompt span.
++- There is no prosody planning stage, so short prompts can underspecify timing
++  and emphasis.
++- The same decoder must solve speaker retention, prosody planning, and token
++  filling in one pass.
++- Chunked inference without reference audio reuses the first generated chunk as
++  prompt audio, which can drift.
++
++## 2. CloneEval Benchmark Setup
++
++ClonEval is a directory-based benchmark that compares original and cloned audio
++using:
++
++- WavLM speaker-embedding cosine similarity
++- feature-level cosine similarities for pitch, spectrogram, mel spectrogram,
++  MFCCs, RMS, spectral statistics, LPCs, tempogram, chroma, CQT-family features
++
++Datasets in the paper:
++
++- LibriSpeech test-clean
++- CREMA-D
++- RAVDESS
++- SAVEE
++- TESS
++
++This repo now includes a bridge runner:
++
++- `python -m omnivoice.eval.cloneval_benchmark`
++
++It accepts an OmniVoice-style JSONL test list, materializes reference audio
++files named by sample id, generates cloned audio with `OmniVoice.generate`, and
++then runs the official ClonEval library on the paired directories.
++
++## 3. Baseline Results
++
++Status in this workspace:
++
++- Baseline architecture inspection: completed
++- Official ClonEval repo integration: completed
++- Full OmniVoice checkpoint download: not run here
++- Full CloneEval dataset preparation: not run here
++- Full baseline benchmark numbers: not available in this CPU-only workspace
++
++When the model and datasets are available, the benchmark runner will write:
++
++- `metrics/results.csv`
++- `metrics/aggregated_results.csv`
++- `metrics/runtime_metrics.csv`
++- `metrics/runtime_metrics.summary.json`
++
++## 4. Three Novel Architecture Proposals
++
++### Proposal A: MnemosVoice
++
++Idea:
++
++- Add a prompt-audio speaker-memory encoder.
++- Add a coarse prosody planner over downsampled target positions.
++- Condition the target hidden states with cross-attention to speaker memory and
++  prosody-plan tokens before the audio-token heads.
++
++Expected advantage:
++
++- Better speaker similarity on short prompts
++- More stable prosody transfer
++- More robust voice cloning without replacing OmniVoice’s fast masked decoder
++
++Risk:
++
++- Extra memory-conditioning path can overfit to prompt acoustics if not
++  regularized.
++
++### Proposal B: EchoMosaic
++
++Idea:
++
++- Learn a retrieval mixture over a bank of voice prototypes and blend that with
++  prompt conditioning.
++
++Expected advantage:
++
++- Better robustness for low-SNR or ultra-short reference audio
++
++Risk:
++
++- Prototype collapse or speaker averaging that hurts identity fidelity
++
++### Proposal C: OrpheusDualPath
++
++Idea:
++
++- Split decoding into a coarse autoregressive planner over codebook-0 and a
++  non-autoregressive masked decoder over the remaining codebooks.
++
++Expected advantage:
++
++- Better long-form timing and intonation
++
++Risk:
++
++- Higher latency and more invasive code changes
++
++## 5. Selected Architecture
++
++Selected model: **MnemosVoice**
++
++Why:
++
++- It directly attacks OmniVoice’s weakest CloneEval point: speaker retention
++  from a short prompt.
++- It preserves the existing training data format and generation API.
++- It is meaningfully different from baseline OmniVoice while still feasible to
++  train with comparable compute.
++
++### Tensor Flow
++
++```mermaid
++flowchart LR
++    A["Text + lang/instruct tags"] --> B["LLM backbone hidden states"]
++    P["Prompt audio tokens"] --> C["SpeakerMemoryEncoder"]
++    B --> D["Target hidden states"]
++    C --> E["Speaker memory tokens"]
++    D --> F["ProsodyPlanAdapter"]
++    E --> F
++    E --> G["MemoryConditioner"]
++    F --> G
++    G --> H["Audio token heads"]
++    H --> I["Iterative masked decoding"]
++    I --> J["Codec decoder waveform"]
++```
++
++### Losses
++
++- Baseline masked audio-token cross-entropy
++- Coarse prosody-plan cross-entropy
++- Speaker consistency cosine loss between conditioned target states and prompt
++  speaker summary
++
++## 6. Implementation Details
++
++New modules:
++
++- `omnivoice/models/mnemosvoice.py`
++
++Modified files:
++
++- `omnivoice/models/omnivoice.py`
++- `omnivoice/data/processor.py`
++- `omnivoice/data/collator.py`
++- `omnivoice/training/config.py`
++- `omnivoice/training/builder.py`
++- `pyproject.toml`
++- `examples/config/train_config_mnemosvoice.json`
++- `examples/run_cloneval.sh`
++
++New benchmark runner:
++
++- `omnivoice/eval/cloneval_benchmark.py`
++
++## 7. Training and Evaluation Plan
++
++Controlled comparison:
++
++- Same base LLM
++- Same audio tokenizer
++- Same multilingual training data and preprocessing
++- Same masking policy and batch-token budget
++- Same ClonEval prompt/test list construction
++
++Recommended schedule:
++
++1. Warm start from an OmniVoice checkpoint.
++2. Train with `architecture_variant="mnemosvoice"` and small auxiliary-loss
++   weights.
++3. Sweep:
++   - speaker memory token count
++   - planner stride
++   - planner loss weight
++   - speaker loss weight
++4. Run baseline and MnemosVoice on identical CloneEval manifests.
++
++## 8. Experimental Results
++
++Current status:
++
++- Unit-level architecture tests: passed
++- End-to-end CloneEval numbers: pending checkpoint and dataset availability
++
++Planned result table:
++
++| Model | LibriSpeech | CREMA-D | RAVDESS | SAVEE | TESS | Average | Mean RTF | Peak RSS |
++|---|---:|---:|---:|---:|---:|---:|---:|---:|
++| OmniVoice | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
++| MnemosVoice | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
++
++## 9. Ablation Results
++
++Planned ablations:
++
++| Variant | Speaker Memory | Prosody Planner | Speaker Loss | Average CloneEval |
++|---|---|---|---|---:|
++| OmniVoice baseline | no | no | no | TBD |
++| MnemosVoice full | yes | yes | yes | TBD |
++| without speaker memory | no | yes | yes | TBD |
++| without prosody planner | yes | no | yes | TBD |
++| without speaker loss | yes | yes | no | TBD |
++
++## 10. Final Verdict
++
++The codebase now contains a concrete next-generation OmniVoice extension,
++**MnemosVoice**, plus an official ClonEval adapter so the baseline and proposed
++model can be compared under one benchmark harness.
++
++What is proven here:
++
++- The baseline has been analyzed in detail.
++- A meaningfully different architecture has been implemented.
++- The new modules are unit-tested.
++- The benchmark integration path is in place.
++
++What is not yet proven in this workspace:
++
++- That MnemosVoice beats OmniVoice on CloneEval numerically.
++
++That final claim requires downloading the released OmniVoice checkpoint,
++preparing the ClonEval datasets/manifests, and running the controlled baseline
++vs. MnemosVoice evaluation end to end.
+diff --git a/docs/runpod_mnemosvoice_execution.md b/docs/runpod_mnemosvoice_execution.md
+new file mode 100644
+index 0000000..04c70f7
+--- /dev/null
++++ b/docs/runpod_mnemosvoice_execution.md
+@@ -0,0 +1,148 @@
++# MnemosVoice Runpod Execution Guide
++
++This guide turns the research plan into concrete commands for a Runpod pod with
++`/workspace` storage.
++
++## What was added
++
++- `omnivoice.scripts.build_hf_manifests`
++- `omnivoice.scripts.orchestrate_tokenization`
++- `omnivoice.runpod.launcher`
++- `examples/runpod/bootstrap_omnivoice.sh`
++- `examples/runpod/run_mnemosvoice_pipeline.sh`
++- committed smoke / core / ablation configs in `examples/config/`
++
++## Why the launcher needs your repo URL
++
++The official `k2-fsa/OmniVoice` repository does not contain the local
++MnemosVoice changes. The Runpod launcher therefore accepts `--repo_url` and
++`--repo_branch` explicitly so the pod can clone the branch that actually
++contains the MnemosVoice implementation and benchmark bridge.
++
++## Stage-1 datasets
++
++Automated in `build_hf_manifests`:
++
++- `amphion/Emilia-Dataset`
++- `MLCommons/peoples_speech`
++- `google/WaxalNLP`
++- `facebook/multilingual_librispeech`
++
++Policy:
++
++- filter empty transcripts
++- keep clips between `1.5s` and `20s`
++- deduplicate by `(dataset_name, source_id)`
++- People’s Speech uses only `clean` and `clean_sa`
++- Waxal keeps only supervised subsets with deterministic language mapping
++- Emilia creates a small validation slice via deterministic hash split plus a
++  per-language minimum floor
++
++## Stage-2 datasets
++
++Partially automated:
++
++- Common Voice 17.0 recipes are scaffolded
++- LibriTTS-R, VCTK, MUSAN, and RIRS_NOISES are represented by local-manifest
++  placeholders under `stage2_local_templates`
++
++That keeps the config format stable while allowing stage-2 local corpora to be
++added without changing the training scripts.
++
++## Suggested sequence on Runpod
++
++1. Provision the pod:
++
++```bash
++python -m omnivoice.runpod.launcher create \
++  --env_file /workspace/.env \
++  --repo_url https://github.com/<you>/<your-omnivoice-fork>.git \
++  --repo_branch <your-branch> \
++  --name mnemosvoice-stage1 \
++  --gpu_type_id "NVIDIA A100 80GB PCIe" \
++  --data_center_id US-KS-2
++```
++
++2. On the pod, bootstrap completes automatically via `dockerStartCmd`. If you
++   want to rerun it manually:
++
++```bash
++cd /workspace/OmniVoice
++bash examples/runpod/bootstrap_omnivoice.sh
++```
++
++3. Run the staged pipeline:
++
++```bash
++cd /workspace/OmniVoice
++bash examples/runpod/run_mnemosvoice_pipeline.sh 0 4
++```
++
++That covers:
++
++- stage-1 smoke manifest build
++- smoke tokenization
++- baseline CloneEval smoke
++- MnemosVoice smoke continue-train
++- MnemosVoice smoke CloneEval comparison
++
++4. Continue to the core run:
++
++```bash
++bash examples/runpod/run_mnemosvoice_pipeline.sh 5 8
++```
++
++## Direct commands
++
++Build smoke manifests:
++
++```bash
++python -m omnivoice.scripts.build_hf_manifests \
++  --stage stage1 \
++  --profile smoke \
++  --manifest_root /workspace/data/raw_manifests/stage1_smoke \
++  --audio_root /workspace/data/raw_audio/stage1_smoke \
++  --env_file /workspace/.env
++```
++
++Tokenize and write a data config:
++
++```bash
++python -m omnivoice.scripts.orchestrate_tokenization \
++  --manifest_root /workspace/data/raw_manifests/stage1_smoke \
++  --token_root /workspace/data/tokens/stage1_smoke \
++  --data_config_out /workspace/OmniVoice/examples/config/data_config_mnemosvoice_smoke.json \
++  --profile smoke
++```
++
++Train the smoke checkpoint:
++
++```bash
++accelerate launch -m omnivoice.cli.train \
++  --train_config /workspace/OmniVoice/examples/config/train_config_mnemosvoice_smoke.json \
++  --data_config /workspace/OmniVoice/examples/config/data_config_mnemosvoice_smoke.json \
++  --output_dir /workspace/exp/mnemosvoice_smoke
++```
++
++Run CloneEval:
++
++```bash
++python -m omnivoice.eval.cloneval_benchmark \
++  --model /workspace/exp/mnemosvoice_smoke/checkpoint-last \
++  --test_list /workspace/data/cloneval/cloneval_smoke.jsonl \
++  --work_dir /workspace/exp/mnemosvoice_cloneeval_smoke \
++  --cloneval_repo /workspace/cloneval \
++  --device_map cuda \
++  --dtype float16 \
++  --limit 2
++```
++
++Render a comparison table:
++
++```bash
++python -m omnivoice.scripts.render_cloneval_report \
++  --baseline_dir /workspace/exp/baseline_cloneeval_smoke/metrics \
++  --mnemosvoice_dir /workspace/exp/mnemosvoice_cloneeval_smoke/metrics \
++  --output /workspace/exp/reports/cloneval_smoke_report.md
++```
++
 diff --git a/examples/README.md b/examples/README.md
 index ebdf6e8..ef34299 100644
 --- a/examples/README.md
@@ -123,6 +533,277 @@ index ebdf6e8..ef34299 100644
  
  > See [docs/evaluation.md](../docs/evaluation.md) for metrics details, test set preparation, and running individual metrics.
 -
+diff --git a/examples/config/data_config_mnemosvoice_smoke.json b/examples/config/data_config_mnemosvoice_smoke.json
+new file mode 100644
+index 0000000..50cc04e
+--- /dev/null
++++ b/examples/config/data_config_mnemosvoice_smoke.json
+@@ -0,0 +1,141 @@
++{
++  "train": [
++    {
++      "dataset_name": "emilia",
++      "language_id": "de",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_de_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "emilia",
++      "language_id": "en",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_en_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "emilia",
++      "language_id": "fr",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_fr_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "emilia",
++      "language_id": "ja",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_ja_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "emilia",
++      "language_id": "ko",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_ko_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "emilia",
++      "language_id": "zh",
++      "manifest_path": ["/workspace/data/tokens/stage1_smoke/emilia_zh_train/data.lst"],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "peoples_speech",
++      "language_id": "en",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_sa_train/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "mls",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/mls_de_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_es_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_fr_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_it_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_nl_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_pl_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_pt_train/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "waxal",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/waxal_am_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_dag_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ff_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ha_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ig_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ln_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_luo_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_om_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_sn_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_sw_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ti_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_tw_train/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_yo_train/data.lst"
++      ],
++      "repeat": 1
++    }
++  ],
++  "dev": [
++    {
++      "dataset_name": "emilia",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/emilia_de_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/emilia_en_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/emilia_fr_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/emilia_ja_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/emilia_ko_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/emilia_zh_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "peoples_speech",
++      "language_id": "en",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/peoples_speech_clean_sa_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "mls",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/mls_de_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_es_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_fr_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_it_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_nl_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_pl_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/mls_pt_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "waxal",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_smoke/waxal_am_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_dag_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ff_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ha_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ig_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ln_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_luo_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_om_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_sn_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_sw_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_ti_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_tw_dev/data.lst",
++        "/workspace/data/tokens/stage1_smoke/waxal_yo_dev/data.lst"
++      ],
++      "repeat": 1
++    }
++  ]
++}
+diff --git a/examples/config/data_config_mnemosvoice_stage1_core.json b/examples/config/data_config_mnemosvoice_stage1_core.json
+new file mode 100644
+index 0000000..567dccd
+--- /dev/null
++++ b/examples/config/data_config_mnemosvoice_stage1_core.json
+@@ -0,0 +1,118 @@
++{
++  "train": [
++    {
++      "dataset_name": "emilia",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/emilia_de_train/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_en_train/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_fr_train/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_ja_train/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_ko_train/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_zh_train/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "peoples_speech",
++      "language_id": "en",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/peoples_speech_clean_train/data.lst",
++        "/workspace/data/tokens/stage1_core/peoples_speech_clean_sa_train/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "mls",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/mls_de_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_es_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_fr_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_it_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_nl_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_pl_train/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_pt_train/data.lst"
++      ],
++      "repeat": 2
++    },
++    {
++      "dataset_name": "waxal",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/waxal_am_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_dag_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ff_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ha_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ig_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ln_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_luo_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_om_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_sn_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_sw_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ti_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_tw_train/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_yo_train/data.lst"
++      ],
++      "repeat": 4
++    }
++  ],
++  "dev": [
++    {
++      "dataset_name": "emilia",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/emilia_de_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_en_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_fr_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_ja_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_ko_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/emilia_zh_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "peoples_speech",
++      "language_id": "en",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/peoples_speech_clean_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/peoples_speech_clean_sa_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "mls",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/mls_de_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_es_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_fr_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_it_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_nl_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_pl_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/mls_pt_dev/data.lst"
++      ],
++      "repeat": 1
++    },
++    {
++      "dataset_name": "waxal",
++      "language_id": "multilingual",
++      "manifest_path": [
++        "/workspace/data/tokens/stage1_core/waxal_am_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_dag_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ff_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ha_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ig_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ln_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_luo_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_om_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_sn_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_sw_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_ti_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_tw_dev/data.lst",
++        "/workspace/data/tokens/stage1_core/waxal_yo_dev/data.lst"
++      ],
++      "repeat": 1
++    }
++  ]
++}
 diff --git a/examples/config/train_config_aoede.json b/examples/config/train_config_aoede.json
 new file mode 100644
 index 0000000..a6b07d9
@@ -276,6 +957,303 @@ index 0000000..39e7ae7
 +  "save_steps": 50,
 +  "keep_last_n_checkpoints": 2
 +}
+diff --git a/examples/config/train_config_mnemosvoice.json b/examples/config/train_config_mnemosvoice.json
+new file mode 100644
+index 0000000..ac7d123
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice.json
+@@ -0,0 +1,46 @@
++{
++    "llm_name_or_path": "Qwen/Qwen3-0.6B",
++    "audio_vocab_size": 1025,
++    "audio_mask_id": 1024,
++    "num_audio_codebook": 8,
++    "architecture_variant": "mnemosvoice",
++    "speaker_memory_num_tokens": 8,
++    "planner_stride": 4,
++    "planner_loss_weight": 0.2,
++    "speaker_loss_weight": 0.05,
++    "memory_conditioning_num_heads": 8,
++    "memory_conditioning_dropout": 0.1,
++
++    "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++    "drop_cond_ratio": 0.1,
++    "prompt_ratio_range": [0.0, 0.3],
++    "mask_ratio_range": [0.0, 1.0],
++    "language_ratio": 0.0,
++    "use_pinyin_ratio": 0.0,
++    "instruct_ratio": 0.0,
++    "only_instruct_ratio": 0.0,
++
++    "resume_from_checkpoint": null,
++    "init_from_checkpoint": null,
++
++    "learning_rate": 1e-4,
++    "weight_decay": 0.01,
++    "max_grad_norm": 1.0,
++    "steps": 300000,
++    "seed": 42,
++    "warmup_type": "ratio",
++    "warmup_ratio": 0.03,
++    "warmup_steps": 0,
++
++    "batch_tokens": 8192,
++    "gradient_accumulation_steps": 1,
++    "num_workers": 4,
++
++    "mixed_precision": "bf16",
++    "allow_tf32": true,
++
++    "logging_steps": 100,
++    "eval_steps": 1000,
++    "save_steps": 10000,
++    "keep_last_n_checkpoints": -1
++}
+diff --git a/examples/config/train_config_mnemosvoice_ablate_no_prosody_planner.json b/examples/config/train_config_mnemosvoice_ablate_no_prosody_planner.json
+new file mode 100644
+index 0000000..7fa02a3
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice_ablate_no_prosody_planner.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "mnemosvoice",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.0,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "mnemosvoice_use_speaker_memory": true,
++  "mnemosvoice_use_prosody_planner": false,
++  "mnemosvoice_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.1,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 20000,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.03,
++  "warmup_steps": 0,
++  "batch_tokens": 8192,
++  "gradient_accumulation_steps": 2,
++  "num_workers": 8,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 50,
++  "eval_steps": 500,
++  "save_steps": 1000,
++  "keep_last_n_checkpoints": 5
++}
+diff --git a/examples/config/train_config_mnemosvoice_ablate_no_speaker_loss.json b/examples/config/train_config_mnemosvoice_ablate_no_speaker_loss.json
+new file mode 100644
+index 0000000..8017e82
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice_ablate_no_speaker_loss.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "mnemosvoice",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.0,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "mnemosvoice_use_speaker_memory": true,
++  "mnemosvoice_use_prosody_planner": true,
++  "mnemosvoice_use_speaker_consistency_loss": false,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.1,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 20000,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.03,
++  "warmup_steps": 0,
++  "batch_tokens": 8192,
++  "gradient_accumulation_steps": 2,
++  "num_workers": 8,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 50,
++  "eval_steps": 500,
++  "save_steps": 1000,
++  "keep_last_n_checkpoints": 5
++}
+diff --git a/examples/config/train_config_mnemosvoice_ablate_no_speaker_memory.json b/examples/config/train_config_mnemosvoice_ablate_no_speaker_memory.json
+new file mode 100644
+index 0000000..eb06570
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice_ablate_no_speaker_memory.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "mnemosvoice",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "mnemosvoice_use_speaker_memory": false,
++  "mnemosvoice_use_prosody_planner": true,
++  "mnemosvoice_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.1,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 20000,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.03,
++  "warmup_steps": 0,
++  "batch_tokens": 8192,
++  "gradient_accumulation_steps": 2,
++  "num_workers": 8,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 50,
++  "eval_steps": 500,
++  "save_steps": 1000,
++  "keep_last_n_checkpoints": 5
++}
+diff --git a/examples/config/train_config_mnemosvoice_core_continue.json b/examples/config/train_config_mnemosvoice_core_continue.json
+new file mode 100644
+index 0000000..216d269
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice_core_continue.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "mnemosvoice",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "mnemosvoice_use_speaker_memory": true,
++  "mnemosvoice_use_prosody_planner": true,
++  "mnemosvoice_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.1,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 20000,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.03,
++  "warmup_steps": 0,
++  "batch_tokens": 8192,
++  "gradient_accumulation_steps": 2,
++  "num_workers": 8,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 50,
++  "eval_steps": 500,
++  "save_steps": 1000,
++  "keep_last_n_checkpoints": 5
++}
+diff --git a/examples/config/train_config_mnemosvoice_smoke.json b/examples/config/train_config_mnemosvoice_smoke.json
+new file mode 100644
+index 0000000..f9deb0a
+--- /dev/null
++++ b/examples/config/train_config_mnemosvoice_smoke.json
+@@ -0,0 +1,43 @@
++{
++  "llm_name_or_path": "Qwen/Qwen3-0.6B",
++  "audio_vocab_size": 1025,
++  "audio_mask_id": 1024,
++  "num_audio_codebook": 8,
++  "architecture_variant": "mnemosvoice",
++  "speaker_memory_num_tokens": 8,
++  "planner_stride": 4,
++  "planner_loss_weight": 0.2,
++  "speaker_loss_weight": 0.05,
++  "memory_conditioning_num_heads": 8,
++  "memory_conditioning_dropout": 0.1,
++  "mnemosvoice_use_speaker_memory": true,
++  "mnemosvoice_use_prosody_planner": true,
++  "mnemosvoice_use_speaker_consistency_loss": true,
++  "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
++  "drop_cond_ratio": 0.05,
++  "prompt_ratio_range": [0.05, 0.35],
++  "mask_ratio_range": [0.0, 1.0],
++  "language_ratio": 1.0,
++  "use_pinyin_ratio": 0.0,
++  "instruct_ratio": 0.0,
++  "only_instruct_ratio": 0.0,
++  "resume_from_checkpoint": null,
++  "init_from_checkpoint": "k2-fsa/OmniVoice",
++  "learning_rate": 5e-5,
++  "weight_decay": 0.01,
++  "max_grad_norm": 1.0,
++  "steps": 200,
++  "seed": 42,
++  "warmup_type": "ratio",
++  "warmup_ratio": 0.05,
++  "warmup_steps": 0,
++  "batch_tokens": 4096,
++  "gradient_accumulation_steps": 1,
++  "num_workers": 4,
++  "mixed_precision": "bf16",
++  "allow_tf32": true,
++  "logging_steps": 10,
++  "eval_steps": 50,
++  "save_steps": 50,
++  "keep_last_n_checkpoints": 2
++}
 diff --git a/examples/run_benchmark_compare.sh b/examples/run_benchmark_compare.sh
 new file mode 100644
 index 0000000..2e764c3
@@ -346,6 +1324,281 @@ index 0000000..2e764c3
 +fi
 +
 +"${cmd[@]}"
+diff --git a/examples/run_cloneval.sh b/examples/run_cloneval.sh
+new file mode 100644
+index 0000000..baba935
+--- /dev/null
++++ b/examples/run_cloneval.sh
+@@ -0,0 +1,20 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Example usage:
++#   bash examples/run_cloneval.sh \
++#     /path/to/checkpoint_or_hf_repo \
++#     /path/to/cloneval_test_list.jsonl \
++#     /path/to/work_dir \
++#     /path/to/cloneval
++
++MODEL_PATH="${1:-k2-fsa/OmniVoice}"
++TEST_LIST="${2:-data/cloneval_test_list.jsonl}"
++WORK_DIR="${3:-exp/cloneval_eval}"
++CLONEVAL_REPO="${4:-../cloneval}"
++
++python -m omnivoice.eval.cloneval_benchmark \
++  --model "${MODEL_PATH}" \
++  --test_list "${TEST_LIST}" \
++  --work_dir "${WORK_DIR}" \
++  --cloneval_repo "${CLONEVAL_REPO}"
+diff --git a/examples/runpod/bootstrap_omnivoice.sh b/examples/runpod/bootstrap_omnivoice.sh
+new file mode 100644
+index 0000000..7d51552
+--- /dev/null
++++ b/examples/runpod/bootstrap_omnivoice.sh
+@@ -0,0 +1,58 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++WORKSPACE="${WORKSPACE:-/workspace}"
++REPO_DIR_NAME="${REPO_DIR_NAME:-OmniVoice}"
++REPO_DIR="${REPO_DIR:-${WORKSPACE}/${REPO_DIR_NAME}}"
++REPO_URL="${REPO_URL:-}"
++REPO_BRANCH="${REPO_BRANCH:-master}"
++CLONEVAL_REPO_URL="${CLONEVAL_REPO_URL:-https://github.com/amu-cai/cloneval.git}"
++CLONEVAL_REPO_BRANCH="${CLONEVAL_REPO_BRANCH:-main}"
++CLONEVAL_DIR="${CLONEVAL_DIR:-${WORKSPACE}/cloneval}"
++PYTHON_BIN="${PYTHON_BIN:-python3}"
++
++mkdir -p "${WORKSPACE}"
++
++if [ ! -d "${REPO_DIR}/.git" ]; then
++  if [ -z "${REPO_URL}" ]; then
++    echo "REPO_URL must be set when ${REPO_DIR} does not exist."
++    exit 1
++  fi
++  git clone --branch "${REPO_BRANCH}" "${REPO_URL}" "${REPO_DIR}"
++fi
++
++if [ ! -d "${CLONEVAL_DIR}/.git" ]; then
++  git clone --branch "${CLONEVAL_REPO_BRANCH}" "${CLONEVAL_REPO_URL}" "${CLONEVAL_DIR}"
++fi
++
++cd "${REPO_DIR}"
++
++${PYTHON_BIN} -m venv .venv
++source .venv/bin/activate
++
++python -m pip install --upgrade pip wheel
++python -m pip install -e ".[eval,research]"
++
++if [ -n "${HF_TOKEN:-}" ]; then
++  huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential
++fi
++
++mkdir -p \
++  "${WORKSPACE}/data/raw_manifests/stage1_smoke" \
++  "${WORKSPACE}/data/raw_manifests/stage1_core" \
++  "${WORKSPACE}/data/raw_manifests/stage2_expansion" \
++  "${WORKSPACE}/data/raw_audio/stage1_smoke" \
++  "${WORKSPACE}/data/raw_audio/stage1_core" \
++  "${WORKSPACE}/data/raw_audio/stage2_expansion" \
++  "${WORKSPACE}/data/tokens/stage1_smoke" \
++  "${WORKSPACE}/data/tokens/stage1_core" \
++  "${WORKSPACE}/data/tokens/stage2_expansion" \
++  "${WORKSPACE}/exp" \
++  "${WORKSPACE}/logs"
++
++echo "Bootstrap complete."
++echo "Repo: ${REPO_DIR}"
++echo "CloneEval: ${CLONEVAL_DIR}"
++echo "Activate: source ${REPO_DIR}/.venv/bin/activate"
++
+diff --git a/examples/runpod/run_mnemosvoice_ablations.sh b/examples/runpod/run_mnemosvoice_ablations.sh
+new file mode 100644
+index 0000000..0016477
+--- /dev/null
++++ b/examples/runpod/run_mnemosvoice_ablations.sh
+@@ -0,0 +1,48 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++WORKSPACE="${WORKSPACE:-/workspace}"
++REPO_DIR="${REPO_DIR:-${WORKSPACE}/OmniVoice}"
++CLONEVAL_REPO="${CLONEVAL_REPO:-${WORKSPACE}/cloneval}"
++TEST_LIST="${TEST_LIST:-${WORKSPACE}/data/cloneval/cloneval_smoke.jsonl}"
++DATA_CONFIG="${DATA_CONFIG:-${REPO_DIR}/examples/config/data_config_mnemosvoice_stage1_core.json}"
++BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-${WORKSPACE}/exp/ablations}"
++
++cd "${REPO_DIR}"
++source .venv/bin/activate
++
++declare -A CONFIGS=(
++  ["full"]="examples/config/train_config_mnemosvoice_core_continue.json"
++  ["no_speaker_memory"]="examples/config/train_config_mnemosvoice_ablate_no_speaker_memory.json"
++  ["no_prosody_planner"]="examples/config/train_config_mnemosvoice_ablate_no_prosody_planner.json"
++  ["no_speaker_loss"]="examples/config/train_config_mnemosvoice_ablate_no_speaker_loss.json"
++)
++
++for name in "${!CONFIGS[@]}"; do
++  train_config="${CONFIGS[$name]}"
++  output_dir="${BASE_OUTPUT_DIR}/${name}"
++
++  accelerate launch -m omnivoice.cli.train \
++    --train_config "${REPO_DIR}/${train_config}" \
++    --data_config "${DATA_CONFIG}" \
++    --output_dir "${output_dir}"
++
++  python -m omnivoice.eval.cloneval_benchmark \
++    --model "${output_dir}/checkpoint-last" \
++    --test_list "${TEST_LIST}" \
++    --work_dir "${output_dir}/cloneval" \
++    --cloneval_repo "${CLONEVAL_REPO}" \
++    --device_map cuda \
++    --dtype float16 \
++    --limit 2
++done
++
++python -m omnivoice.scripts.render_cloneval_report \
++  --baseline_dir "${WORKSPACE}/exp/baseline_cloneeval_smoke/metrics" \
++  --mnemosvoice_dir "${BASE_OUTPUT_DIR}/full/cloneval/metrics" \
++  --ablation "No speaker memory=${BASE_OUTPUT_DIR}/no_speaker_memory/cloneval/metrics" \
++  --ablation "No prosody planner=${BASE_OUTPUT_DIR}/no_prosody_planner/cloneval/metrics" \
++  --ablation "No speaker loss=${BASE_OUTPUT_DIR}/no_speaker_loss/cloneval/metrics" \
++  --output "${BASE_OUTPUT_DIR}/cloneval_ablation_report.md"
++
+diff --git a/examples/runpod/run_mnemosvoice_pipeline.sh b/examples/runpod/run_mnemosvoice_pipeline.sh
+new file mode 100644
+index 0000000..908fa60
+--- /dev/null
++++ b/examples/runpod/run_mnemosvoice_pipeline.sh
+@@ -0,0 +1,125 @@
++#!/usr/bin/env bash
++
++set -euo pipefail
++
++stage="${1:-0}"
++stop_stage="${2:-8}"
++
++WORKSPACE="${WORKSPACE:-/workspace}"
++REPO_DIR="${REPO_DIR:-${WORKSPACE}/OmniVoice}"
++PYTHON_BIN="${PYTHON_BIN:-${REPO_DIR}/.venv/bin/python}"
++CLONEVAL_REPO="${CLONEVAL_REPO:-${WORKSPACE}/cloneval}"
++BASELINE_MODEL="${BASELINE_MODEL:-k2-fsa/OmniVoice}"
++MNEMOSVOICE_MODEL="${MNEMOSVOICE_MODEL:-${WORKSPACE}/exp/mnemosvoice_stage1_core/checkpoint-last}"
++SMOKE_TEST_LIST="${SMOKE_TEST_LIST:-${WORKSPACE}/data/cloneval/cloneval_smoke.jsonl}"
++FULL_TEST_LIST="${FULL_TEST_LIST:-${WORKSPACE}/data/cloneval/cloneval_full.jsonl}"
++
++SMOKE_MANIFEST_ROOT="${WORKSPACE}/data/raw_manifests/stage1_smoke"
++SMOKE_AUDIO_ROOT="${WORKSPACE}/data/raw_audio/stage1_smoke"
++SMOKE_TOKEN_ROOT="${WORKSPACE}/data/tokens/stage1_smoke"
++
++CORE_MANIFEST_ROOT="${WORKSPACE}/data/raw_manifests/stage1_core"
++CORE_AUDIO_ROOT="${WORKSPACE}/data/raw_audio/stage1_core"
++CORE_TOKEN_ROOT="${WORKSPACE}/data/tokens/stage1_core"
++
++STAGE2_MANIFEST_ROOT="${WORKSPACE}/data/raw_manifests/stage2_expansion"
++STAGE2_AUDIO_ROOT="${WORKSPACE}/data/raw_audio/stage2_expansion"
++STAGE2_TOKEN_ROOT="${WORKSPACE}/data/tokens/stage2_expansion"
++
++SMOKE_DATA_CONFIG="${REPO_DIR}/examples/config/data_config_mnemosvoice_smoke.json"
++CORE_DATA_CONFIG="${REPO_DIR}/examples/config/data_config_mnemosvoice_stage1_core.json"
++
++cd "${REPO_DIR}"
++source .venv/bin/activate
++
++if [ "${stage}" -le 0 ] && [ "${stop_stage}" -ge 0 ]; then
++  echo "Stage 0: build stage-1 smoke manifests"
++  ${PYTHON_BIN} -m omnivoice.scripts.build_hf_manifests \
++    --stage stage1 \
++    --profile smoke \
++    --manifest_root "${SMOKE_MANIFEST_ROOT}" \
++    --audio_root "${SMOKE_AUDIO_ROOT}" \
++    --env_file "${WORKSPACE}/.env" \
++    --write_recipe_plan
++fi
++
++if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
++  echo "Stage 1: tokenize stage-1 smoke manifests"
++  ${PYTHON_BIN} -m omnivoice.scripts.orchestrate_tokenization \
++    --manifest_root "${SMOKE_MANIFEST_ROOT}" \
++    --token_root "${SMOKE_TOKEN_ROOT}" \
++    --data_config_out "${SMOKE_DATA_CONFIG}" \
++    --profile smoke
++fi
++
++if [ "${stage}" -le 2 ] && [ "${stop_stage}" -ge 2 ]; then
++  echo "Stage 2: baseline CloneEval smoke"
++  ${PYTHON_BIN} -m omnivoice.eval.cloneval_benchmark \
++    --model "${BASELINE_MODEL}" \
++    --test_list "${SMOKE_TEST_LIST}" \
++    --work_dir "${WORKSPACE}/exp/baseline_cloneeval_smoke" \
++    --cloneval_repo "${CLONEVAL_REPO}" \
++    --device_map cuda \
++    --dtype float16 \
++    --limit 2
++fi
++
++if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
++  echo "Stage 3: MnemosVoice smoke continue-train"
++  accelerate launch -m omnivoice.cli.train \
++    --train_config "${REPO_DIR}/examples/config/train_config_mnemosvoice_smoke.json" \
++    --data_config "${SMOKE_DATA_CONFIG}" \
++    --output_dir "${WORKSPACE}/exp/mnemosvoice_smoke"
++fi
++
++if [ "${stage}" -le 4 ] && [ "${stop_stage}" -ge 4 ]; then
++  echo "Stage 4: MnemosVoice smoke CloneEval comparison"
++  ${PYTHON_BIN} -m omnivoice.eval.cloneval_benchmark \
++    --model "${WORKSPACE}/exp/mnemosvoice_smoke/checkpoint-last" \
++    --test_list "${SMOKE_TEST_LIST}" \
++    --work_dir "${WORKSPACE}/exp/mnemosvoice_cloneeval_smoke" \
++    --cloneval_repo "${CLONEVAL_REPO}" \
++    --device_map cuda \
++    --dtype float16 \
++    --limit 2
++fi
++
++if [ "${stage}" -le 5 ] && [ "${stop_stage}" -ge 5 ]; then
++  echo "Stage 5: build stage-1 core manifests"
++  ${PYTHON_BIN} -m omnivoice.scripts.build_hf_manifests \
++    --stage stage1 \
++    --profile core \
++    --manifest_root "${CORE_MANIFEST_ROOT}" \
++    --audio_root "${CORE_AUDIO_ROOT}" \
++    --env_file "${WORKSPACE}/.env" \
++    --write_recipe_plan
++fi
++
++if [ "${stage}" -le 6 ] && [ "${stop_stage}" -ge 6 ]; then
++  echo "Stage 6: tokenize stage-1 core manifests"
++  ${PYTHON_BIN} -m omnivoice.scripts.orchestrate_tokenization \
++    --manifest_root "${CORE_MANIFEST_ROOT}" \
++    --token_root "${CORE_TOKEN_ROOT}" \
++    --data_config_out "${CORE_DATA_CONFIG}" \
++    --profile core
++fi
++
++if [ "${stage}" -le 7 ] && [ "${stop_stage}" -ge 7 ]; then
++  echo "Stage 7: MnemosVoice stage-1 core continue-train"
++  accelerate launch -m omnivoice.cli.train \
++    --train_config "${REPO_DIR}/examples/config/train_config_mnemosvoice_core_continue.json" \
++    --data_config "${CORE_DATA_CONFIG}" \
++    --output_dir "${WORKSPACE}/exp/mnemosvoice_stage1_core"
++fi
++
++if [ "${stage}" -le 8 ] && [ "${stop_stage}" -ge 8 ]; then
++  echo "Stage 8: stage-2 manifest scaffolding"
++  ${PYTHON_BIN} -m omnivoice.scripts.build_hf_manifests \
++    --stage stage2 \
++    --profile core \
++    --manifest_root "${STAGE2_MANIFEST_ROOT}" \
++    --audio_root "${STAGE2_AUDIO_ROOT}" \
++    --env_file "${WORKSPACE}/.env" \
++    --write_recipe_plan
++fi
++
 diff --git a/omnivoice/cli/infer_batch.py b/omnivoice/cli/infer_batch.py
 index 82ad1af..903da9c 100644
 --- a/omnivoice/cli/infer_batch.py
@@ -506,6 +1759,1025 @@ index 82ad1af..903da9c 100644
 +
      logging.info("Done!")
  
+ 
+diff --git a/omnivoice/data/collator.py b/omnivoice/data/collator.py
+index 8ce5583..cbb0584 100644
+--- a/omnivoice/data/collator.py
++++ b/omnivoice/data/collator.py
+@@ -45,6 +45,12 @@ class PackingDataCollator:
+         audio_mask = torch.cat(
+             [s["audio_mask"] for s in processed_samples], dim=0
+         )  # [Total_Len]
++        prompt_mask = torch.cat(
++            [s["prompt_mask"] for s in processed_samples], dim=0
++        )  # [Total_Len]
++        target_audio_mask = torch.cat(
++            [s["target_audio_mask"] for s in processed_samples], dim=0
++        )  # [Total_Len]
+ 
+         position_ids = torch.cat(
+             [torch.arange(s["length"], dtype=torch.long) for s in processed_samples],
+@@ -64,6 +70,12 @@ class PackingDataCollator:
+         audio_mask = torch.nn.functional.pad(
+             audio_mask, pad=(0, pad_length), value=False
+         )
++        prompt_mask = torch.nn.functional.pad(
++            prompt_mask, pad=(0, pad_length), value=False
++        )
++        target_audio_mask = torch.nn.functional.pad(
++            target_audio_mask, pad=(0, pad_length), value=False
++        )
+ 
+         position_ids = torch.nn.functional.pad(
+             position_ids, pad=(0, pad_length), value=0
+@@ -73,6 +85,8 @@ class PackingDataCollator:
+             "input_ids": input_ids.unsqueeze(0),  # [1, C, L]
+             "labels": labels.unsqueeze(0),  # [1, C, L]
+             "audio_mask": audio_mask.unsqueeze(0),  # [1, L]
++            "prompt_mask": prompt_mask.unsqueeze(0),  # [1, L]
++            "target_audio_mask": target_audio_mask.unsqueeze(0),  # [1, L]
+             "position_ids": position_ids.unsqueeze(0),  # [1, L]
+         }
+ 
+diff --git a/omnivoice/data/manifest_builder.py b/omnivoice/data/manifest_builder.py
+new file mode 100644
+index 0000000..34fba70
+--- /dev/null
++++ b/omnivoice/data/manifest_builder.py
+@@ -0,0 +1,910 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++
++"""Build OmniVoice-ready JSONL manifests from streaming Hugging Face corpora.
++
++The primary goal of this module is to make the MnemosVoice research pipeline
++repeatable across local machines and Runpod pods:
++
++1. enumerate a staged set of corpora,
++2. materialize paired audio/text samples to local files,
++3. write OmniVoice JSONL manifests,
++4. emit sidecar summaries that later scripts can convert into token shards and
++   multilingual ``data_config.json`` files.
++
++Stage 1 is fully automated around the Hugging Face datasets used in the
++research plan:
++
++- ``amphion/Emilia-Dataset``
++- ``MLCommons/peoples_speech``
++- ``google/WaxalNLP``
++- ``facebook/multilingual_librispeech``
++
++Stage 2 includes Common Voice plus placeholders for local corpora such as
++LibriTTS-R, VCTK, MUSAN, and RIRS_NOISES so the later expansion run can share
++the same data-config format.
++"""
++
++from __future__ import annotations
++
++import io
++import json
++import re
++import shutil
++from collections import defaultdict
++from dataclasses import asdict, dataclass, field
++from hashlib import sha1
++from pathlib import Path
++from typing import Any, Iterable, Optional
++
++import numpy as np
++import soundfile as sf
++
++from omnivoice.utils.lang_map import LANG_IDS, LANG_NAME_TO_ID
++
++TRANSCRIPT_KEYS = (
++    "text",
++    "transcription",
++    "transcript",
++    "normalized_text",
++    "sentence",
++    "utterance",
++)
++LANGUAGE_KEYS = ("language", "lang", "language_id", "locale")
++SPEAKER_KEYS = ("speaker_id", "speaker", "client_id", "voice_id")
++ID_KEYS = ("id", "utt_id", "audio_id", "sample_id", "key")
++AUDIO_BYTES_KEYS = ("flac", "wav", "mp3", "ogg", "opus", "m4a")
++
++
++@dataclass(frozen=True)
++class CorpusRecipe:
++    name: str
++    stage: str
++    kind: str
++    dataset_id: Optional[str] = None
++    config_names: tuple[str, ...] = ()
++    split_name: str = "train"
++    role: str = "train"
++    output_stem: str = ""
++    language_id: Optional[str] = None
++    requires_hf_token: bool = False
++    min_duration_s: float = 1.5
++    max_duration_s: float = 20.0
++    max_hours_total: Optional[float] = None
++    max_hours_per_language: Optional[float] = None
++    max_records: Optional[int] = None
++    hash_dev_ratio: float = 0.0
++    min_dev_examples_per_language: int = 0
++    repeat_hint: int = 1
++    notes: str = ""
++
++
++@dataclass
++class ManifestRecord:
++    id: str
++    audio_path: str
++    text: str
++    language_id: str
++    dataset_name: str
++    source_id: str
++    speaker_id: Optional[str]
++    duration_s: float
++    config_name: Optional[str] = None
++
++
++@dataclass
++class ManifestSummary:
++    dataset_name: str
++    split_role: str
++    language_id: str
++    output_stem: str
++    manifest_path: str
++    num_samples: int = 0
++    total_duration_s: float = 0.0
++    repeat_hint: int = 1
++    source_configs: list[str] = field(default_factory=list)
++    notes: str = ""
++
++
++STAGE1_EMILIA_LANGUAGES = ("de", "en", "fr", "ja", "ko", "zh")
++STAGE1_MLS_LANGUAGES = {
++    "german": "de",
++    "dutch": "nl",
++    "spanish": "es",
++    "french": "fr",
++    "italian": "it",
++    "polish": "pl",
++    "portuguese": "pt",
++}
++
++WAXAL_LANGUAGE_ID_MAP = {
++    "ach": None,
++    "aka": None,
++    "amh": "am",
++    "dag": "dag",
++    "dga": None,
++    "ewe": None,
++    "fat": None,
++    "ful": "ff",
++    "hau": "ha",
++    "ibo": "ig",
++    "kik": None,
++    "kpo": None,
++    "lin": "ln",
++    "lug": None,
++    "luo": "luo",
++    "mas": None,
++    "mlg": None,
++    "nyn": None,
++    "orm": "om",
++    "sid": None,
++    "sna": "sn",
++    "sog": None,
++    "swa": "sw",
++    "tir": "ti",
++    "twi": "tw",
++    "wal": None,
++    "yor": "yo",
++}
++
++WAXAL_GROUPED_SUBSETS = {
++    "am": ("amh_asr",),
++    "dag": ("dag_asr",),
++    "ff": ("ful_asr", "ful_tts"),
++    "ha": ("hau_tts",),
++    "ig": ("ibo_tts",),
++    "ln": ("lin_asr",),
++    "luo": ("luo_tts",),
++    "om": ("orm_asr",),
++    "sn": ("sna_asr",),
++    "sw": ("swa_tts",),
++    "ti": ("tir_asr",),
++    "tw": ("twi_tts",),
++    "yo": ("yor_tts",),
++}
++
++STAGE2_COMMON_VOICE_LANGUAGES = {
++    "en": "en",
++    "de": "de",
++    "es": "es",
++    "fr": "fr",
++    "it": "it",
++    "pt": "pt",
++    "ar": "ar",
++    "hi": "hi",
++    "id": "id",
++    "ru": "ru",
++    "sw": "sw",
++    "vi": "vi",
++    "zh-CN": "zh",
++}
++
++STAGE2_LOCAL_CORPORA = {
++    "libritts_r": "Provide local JSONL manifests extracted from LibriTTS-R.",
++    "vctk": "Provide local JSONL manifests extracted from VCTK.",
++    "musan": "Provide local JSONL manifests for noise-only prompt augmentation.",
++    "rirs_noises": "Provide local JSONL manifests for room impulse responses.",
++}
++
++
++def stage_recipes(stage: str, profile: str) -> list[CorpusRecipe]:
++    stage = stage.lower()
++    profile = profile.lower()
++    if stage not in {"stage1", "stage2", "all"}:
++        raise ValueError(f"Unsupported stage: {stage}")
++    if profile not in {"smoke", "core"}:
++        raise ValueError(f"Unsupported profile: {profile}")
++
++    recipes: list[CorpusRecipe] = []
++    if stage in {"stage1", "all"}:
++        recipes.extend(_stage1_recipes(profile))
++    if stage in {"stage2", "all"}:
++        recipes.extend(_stage2_recipes(profile))
++    return recipes
++
++
++def _stage1_recipes(profile: str) -> list[CorpusRecipe]:
++    smoke = profile == "smoke"
++    waxal_records = 32 if smoke else None
++    peoples_records = 48 if smoke else None
++    emilia_records = 64 if smoke else None
++    mls_records = 32 if smoke else None
++
++    recipes = [
++        CorpusRecipe(
++            name="emilia",
++            stage="stage1",
++            kind="hf_emilia",
++            dataset_id="amphion/Emilia-Dataset",
++            split_name="train",
++            role="mixed",
++            output_stem="emilia",
++            requires_hf_token=True,
++            max_hours_total=12.0 if smoke else 600.0,
++            max_hours_per_language=2.0 if smoke else 100.0,
++            max_records=emilia_records,
++            hash_dev_ratio=0.01,
++            min_dev_examples_per_language=4 if smoke else 32,
++            notes="Stage-1 core multilingual Emilia stream.",
++        ),
++        CorpusRecipe(
++            name="peoples_speech",
++            stage="stage1",
++            kind="hf_audio",
++            dataset_id="MLCommons/peoples_speech",
++            config_names=("clean",),
++            split_name="train",
++            role="mixed",
++            output_stem="peoples_speech_clean",
++            language_id="en",
++            max_hours_total=2.0 if smoke else 150.0,
++            max_records=peoples_records,
++            hash_dev_ratio=0.01,
++            min_dev_examples_per_language=8 if smoke else 64,
++            notes="People's Speech clean split only.",
++        ),
++        CorpusRecipe(
++            name="peoples_speech",
++            stage="stage1",
++            kind="hf_audio",
++            dataset_id="MLCommons/peoples_speech",
++            config_names=("clean_sa",),
++            split_name="train",
++            role="mixed",
++            output_stem="peoples_speech_clean_sa",
++            language_id="en",
++            max_hours_total=2.0 if smoke else 150.0,
++            max_records=peoples_records,
++            hash_dev_ratio=0.01,
++            min_dev_examples_per_language=8 if smoke else 64,
++            notes="People's Speech CC-BY-SA clean split only.",
++        ),
++    ]
++
++    for config_name, language_id in STAGE1_MLS_LANGUAGES.items():
++        recipes.append(
++            CorpusRecipe(
++                name="mls",
++                stage="stage1",
++                kind="hf_audio",
++                dataset_id="facebook/multilingual_librispeech",
++                config_names=(config_name,),
++                split_name="train",
++                role="train",
++                output_stem=f"mls_{language_id}_train",
++                language_id=language_id,
++                max_hours_total=1.0 if smoke else 50.0,
++                max_records=mls_records,
++                repeat_hint=2,
++                notes=f"MLS {config_name} train split.",
++            )
++        )
++        recipes.append(
++            CorpusRecipe(
++                name="mls",
++                stage="stage1",
++                kind="hf_audio",
++                dataset_id="facebook/multilingual_librispeech",
++                config_names=(config_name,),
++                split_name="dev",
++                role="dev",
++                output_stem=f"mls_{language_id}_dev",
++                language_id=language_id,
++                max_records=8 if smoke else None,
++                repeat_hint=1,
++                notes=f"MLS {config_name} dev split.",
++            )
++        )
++
++    for language_id, subsets in WAXAL_GROUPED_SUBSETS.items():
++        recipes.append(
++            CorpusRecipe(
++                name="waxal",
++                stage="stage1",
++                kind="hf_audio",
++                dataset_id="google/WaxalNLP",
++                config_names=subsets,
++                split_name="train",
++                role="train",
++                output_stem=f"waxal_{language_id}_train",
++                language_id=language_id,
++                max_hours_total=0.5 if smoke else 25.0,
++                max_records=waxal_records,
++                repeat_hint=4,
++                notes=f"Waxal supervised train subsets for {language_id}.",
++            )
++        )
++        recipes.append(
++            CorpusRecipe(
++                name="waxal",
++                stage="stage1",
++                kind="hf_audio",
++                dataset_id="google/WaxalNLP",
++                config_names=subsets,
++                split_name="validation",
++                role="dev",
++                output_stem=f"waxal_{language_id}_dev",
++                language_id=language_id,
++                max_records=8 if smoke else None,
++                repeat_hint=1,
++                notes=f"Waxal supervised validation subsets for {language_id}.",
++            )
++        )
++
++    return recipes
++
++
++def _stage2_recipes(profile: str) -> list[CorpusRecipe]:
++    smoke = profile == "smoke"
++    recipes: list[CorpusRecipe] = []
++    for locale, language_id in STAGE2_COMMON_VOICE_LANGUAGES.items():
++        recipes.append(
++            CorpusRecipe(
++                name="common_voice",
++                stage="stage2",
++                kind="hf_audio",
++                dataset_id="mozilla-foundation/common_voice_17_0",
++                config_names=(locale,),
++                split_name="train",
++                role="train",
++                output_stem=f"common_voice_{language_id}_train",
++                language_id=language_id,
++                max_hours_total=0.5 if smoke else 25.0,
++                max_records=16 if smoke else None,
++                repeat_hint=1,
++                notes=f"Common Voice 17.0 train split for {locale}.",
++            )
++        )
++        recipes.append(
++            CorpusRecipe(
++                name="common_voice",
++                stage="stage2",
++                kind="hf_audio",
++                dataset_id="mozilla-foundation/common_voice_17_0",
++                config_names=(locale,),
++                split_name="validation",
++                role="dev",
++                output_stem=f"common_voice_{language_id}_dev",
++                language_id=language_id,
++                max_records=4 if smoke else None,
++                repeat_hint=1,
++                notes=f"Common Voice 17.0 validation split for {locale}.",
++            )
++        )
++
++    for corpus_name, notes in STAGE2_LOCAL_CORPORA.items():
++        recipes.append(
++            CorpusRecipe(
++                name=corpus_name,
++                stage="stage2",
++                kind="placeholder_local",
++                output_stem=corpus_name,
++                notes=notes,
++            )
++        )
++
++    return recipes
++
++
++def list_supported_waxal_codes() -> dict[str, Optional[str]]:
++    return dict(WAXAL_LANGUAGE_ID_MAP)
++
++
++def _normalise_text(text: str) -> str:
++    text = re.sub(r"\s+", " ", text or "").strip()
++    return text
++
++
++def _safe_name(value: str) -> str:
++    value = re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("._")
++    return value or "sample"
++
++
++def _stable_bucket(value: str, modulo: int = 10_000) -> int:
++    digest = sha1(value.encode("utf-8")).hexdigest()
++    return int(digest[:8], 16) % modulo
++
++
++def _candidate(mapping: dict[str, Any], keys: Iterable[str]) -> Any:
++    for key in keys:
++        if key in mapping and mapping[key] not in (None, ""):
++            return mapping[key]
++    return None
++
++
++def _coerce_json_metadata(sample: dict[str, Any]) -> dict[str, Any]:
++    raw = sample.get("json")
++    if raw is None:
++        return {}
++    if isinstance(raw, dict):
++        return raw
++    if isinstance(raw, bytes):
++        raw = raw.decode("utf-8")
++    if isinstance(raw, str):
++        raw = raw.strip()
++        if not raw:
++            return {}
++        return json.loads(raw)
++    return {}
++
++
++def _resolve_language_id(value: Optional[str]) -> Optional[str]:
++    if not value:
++        return None
++    candidate = str(value).strip()
++    if not candidate:
++        return None
++    lowered = candidate.lower()
++    if lowered in LANG_IDS:
++        return lowered
++    if candidate in LANG_IDS:
++        return candidate
++    if lowered in LANG_NAME_TO_ID:
++        return LANG_NAME_TO_ID[lowered]
++    if lowered in WAXAL_LANGUAGE_ID_MAP and WAXAL_LANGUAGE_ID_MAP[lowered]:
++        return WAXAL_LANGUAGE_ID_MAP[lowered]
++    if "-" in lowered:
++        prefix = lowered.split("-", 1)[0]
++        if prefix in LANG_IDS:
++            return prefix
++    return None
++
++
++def _extract_duration_hint_seconds(sample: dict[str, Any], meta: dict[str, Any]) -> Optional[float]:
++    for mapping in (sample, meta):
++        duration_ms = mapping.get("duration_ms")
++        if duration_ms not in (None, ""):
++            return float(duration_ms) / 1000.0
++        duration_s = mapping.get("duration_s") or mapping.get("audio_duration")
++        if duration_s not in (None, ""):
++            return float(duration_s)
++    audio = sample.get("audio")
++    if isinstance(audio, dict) and audio.get("array") is not None:
++        sampling_rate = audio.get("sampling_rate") or 24_000
++        return float(len(audio["array"])) / float(sampling_rate)
++    return None
++
++
++def _extract_text(sample: dict[str, Any], meta: dict[str, Any]) -> str:
++    text = _candidate(sample, TRANSCRIPT_KEYS)
++    if text is None:
++        text = _candidate(meta, TRANSCRIPT_KEYS)
++    return _normalise_text(str(text or ""))
++
++
++def _extract_speaker_id(sample: dict[str, Any], meta: dict[str, Any]) -> Optional[str]:
++    speaker = _candidate(sample, SPEAKER_KEYS)
++    if speaker is None:
++        speaker = _candidate(meta, SPEAKER_KEYS)
++    return str(speaker) if speaker not in (None, "") else None
++
++
++def _extract_source_id(sample: dict[str, Any], meta: dict[str, Any], fallback_prefix: str) -> str:
++    source_id = _candidate(sample, ID_KEYS)
++    if source_id is None:
++        source_id = _candidate(meta, ID_KEYS)
++    if source_id is None:
++        source_id = sample.get("__key__")
++    if source_id is None:
++        source_id = f"{fallback_prefix}-{_stable_bucket(json.dumps(meta, sort_keys=True)[:256])}"
++    return str(source_id)
++
++
++def _materialise_audio(sample: dict[str, Any], destination_base: Path) -> Path:
++    audio = sample.get("audio")
++    if isinstance(audio, dict):
++        path = audio.get("path")
++        if path:
++            src = Path(path)
++            if src.exists():
++                out_path = destination_base.with_suffix(src.suffix or ".wav")
++                out_path.parent.mkdir(parents=True, exist_ok=True)
++                if src.resolve() != out_path.resolve():
++                    shutil.copy2(src, out_path)
++                return out_path
++
++        audio_bytes = audio.get("bytes")
++        if audio_bytes:
++            ext = Path(path).suffix if path else ".wav"
++            out_path = destination_base.with_suffix(ext or ".wav")
++            out_path.parent.mkdir(parents=True, exist_ok=True)
++            out_path.write_bytes(audio_bytes)
++            return out_path
++
++        audio_array = audio.get("array")
++        if audio_array is not None:
++            out_path = destination_base.with_suffix(".wav")
++            out_path.parent.mkdir(parents=True, exist_ok=True)
++            sampling_rate = audio.get("sampling_rate") or 24_000
++            sf.write(
++                out_path,
++                np.asarray(audio_array, dtype=np.float32),
++                int(sampling_rate),
++            )
++            return out_path
++
++    for ext in AUDIO_BYTES_KEYS:
++        if ext in sample and sample[ext]:
++            out_path = destination_base.with_suffix(f".{ext}")
++            out_path.parent.mkdir(parents=True, exist_ok=True)
++            payload = sample[ext]
++            if isinstance(payload, str):
++                payload = payload.encode("utf-8")
++            out_path.write_bytes(payload)
++            return out_path
++
++    raise ValueError("sample did not contain usable audio content")
++
++
++def _audio_duration_seconds(path: Path) -> float:
++    info = sf.info(str(path))
++    return float(info.frames) / float(info.samplerate)
++
++
++class ManifestWriter:
++    def __init__(self, manifest_root: Path):
++        self.manifest_root = manifest_root
++        self.manifest_root.mkdir(parents=True, exist_ok=True)
++        self._handles: dict[Path, Any] = {}
++        self._stats: dict[Path, ManifestSummary] = {}
++
++    def write(self, output_stem: str, record: ManifestRecord, repeat_hint: int, source_configs: Iterable[str], notes: str, role: str):
++        manifest_path = self.manifest_root / f"{output_stem}.jsonl"
++        if manifest_path not in self._handles:
++            self._handles[manifest_path] = open(manifest_path, "a", encoding="utf-8")
++            self._stats[manifest_path] = ManifestSummary(
++                dataset_name=record.dataset_name,
++                split_role=role,
++                language_id=record.language_id,
++                output_stem=output_stem,
++                manifest_path=str(manifest_path),
++                repeat_hint=repeat_hint,
++                source_configs=sorted(set(source_configs)),
++                notes=notes,
++            )
++
++        handle = self._handles[manifest_path]
++        handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
++        stats = self._stats[manifest_path]
++        stats.num_samples += 1
++        stats.total_duration_s += record.duration_s
++
++    def close(self):
++        for handle in self._handles.values():
++            handle.close()
++        for manifest_path, summary in self._stats.items():
++            summary_path = manifest_path.with_suffix(".summary.json")
++            summary_path.write_text(
++                json.dumps(asdict(summary), ensure_ascii=False, indent=2),
++                encoding="utf-8",
++            )
++
++
++def build_hf_manifests(
++    recipes: Iterable[CorpusRecipe],
++    manifest_root: str,
++    audio_root: str,
++    hf_token: Optional[str] = None,
++    skip_existing: bool = False,
++) -> list[Path]:
++    writer = ManifestWriter(Path(manifest_root))
++    audio_root_path = Path(audio_root)
++    built_paths: list[Path] = []
++
++    try:
++        for recipe in recipes:
++            if recipe.kind == "placeholder_local":
++                built_paths.extend(_write_local_placeholder(recipe, Path(manifest_root)))
++                continue
++            if recipe.kind == "hf_emilia":
++                _build_emilia_recipe(
++                    recipe,
++                    writer=writer,
++                    audio_root=audio_root_path,
++                    hf_token=hf_token,
++                    skip_existing=skip_existing,
++                )
++            elif recipe.kind == "hf_audio":
++                _build_fixed_hf_recipe(
++                    recipe,
++                    writer=writer,
++                    audio_root=audio_root_path,
++                    hf_token=hf_token,
++                    skip_existing=skip_existing,
++                )
++            else:
++                raise ValueError(f"Unsupported recipe kind: {recipe.kind}")
++    finally:
++        writer.close()
++
++    for summary_path in Path(manifest_root).glob("*.summary.json"):
++        built_paths.append(summary_path.with_suffix("").with_suffix(".jsonl"))
++    return sorted(set(built_paths))
++
++
++def _iter_hf_rows(
++    dataset_id: str,
++    config_name: Optional[str],
++    split_name: str,
++    hf_token: Optional[str],
++    streaming: bool = True,
++):
++    from datasets import load_dataset
++
++    kwargs: dict[str, Any] = {"streaming": streaming}
++    if hf_token:
++        kwargs["token"] = hf_token
++
++    try:
++        ds = load_dataset(dataset_id, config_name, split=split_name, **kwargs)
++    except Exception:
++        ds = load_dataset(dataset_id, config_name, **kwargs)
++        if isinstance(ds, dict):
++            if split_name in ds:
++                ds = ds[split_name]
++            else:
++                first_split = next(iter(ds))
++                ds = ds[first_split]
++    return ds
++
++
++def _build_fixed_hf_recipe(
++    recipe: CorpusRecipe,
++    writer: ManifestWriter,
++    audio_root: Path,
++    hf_token: Optional[str],
++    skip_existing: bool,
++):
++    seen_source_ids: set[str] = set()
++    total_hours = 0.0
++    record_count = 0
++    train_records = 0
++    dev_records = 0
++
++    for config_name in recipe.config_names or (None,):
++        dataset = _iter_hf_rows(
++            dataset_id=recipe.dataset_id,
++            config_name=config_name,
++            split_name=recipe.split_name,
++            hf_token=hf_token if recipe.requires_hf_token else hf_token,
++        )
++        for sample in dataset:
++            meta = _coerce_json_metadata(sample)
++            text = _extract_text(sample, meta)
++            if not text:
++                continue
++
++            language_id = _resolve_language_id(
++                recipe.language_id or _candidate(sample, LANGUAGE_KEYS) or _candidate(meta, LANGUAGE_KEYS)
++            )
++            if not language_id:
++                continue
++
++            source_id = _extract_source_id(
++                sample,
++                meta,
++                fallback_prefix=recipe.output_stem or recipe.name,
++            )
++            dedupe_key = f"{recipe.name}:{source_id}"
++            if dedupe_key in seen_source_ids:
++                continue
++
++            split_role = recipe.role
++            if recipe.role == "mixed":
++                if dev_records < recipe.min_dev_examples_per_language:
++                    split_role = "dev"
++                elif _stable_bucket(source_id) < int(recipe.hash_dev_ratio * 10_000):
++                    split_role = "dev"
++                else:
++                    split_role = "train"
++
++            output_stem = recipe.output_stem
++            if recipe.role == "mixed":
++                output_stem = f"{recipe.output_stem}_{split_role}"
++
++            relative_dir = audio_root / output_stem
++            base_name = _safe_name(source_id)
++            try:
++                audio_path = _materialise_audio(
++                    sample,
++                    destination_base=relative_dir / base_name,
++                )
++            except Exception:
++                continue
++
++            duration_s = _extract_duration_hint_seconds(sample, meta) or _audio_duration_seconds(audio_path)
++            if duration_s < recipe.min_duration_s or duration_s > recipe.max_duration_s:
++                audio_path.unlink(missing_ok=True)
++                continue
++
++            if recipe.max_hours_total is not None and split_role == "train":
++                if total_hours + (duration_s / 3600.0) > recipe.max_hours_total:
++                    audio_path.unlink(missing_ok=True)
++                    break
++
++            if recipe.max_records is not None:
++                if split_role == "train" and train_records >= recipe.max_records:
++                    audio_path.unlink(missing_ok=True)
++                    break
++                if split_role == "dev" and dev_records >= max(4, recipe.max_records // 4):
++                    audio_path.unlink(missing_ok=True)
++                    continue
++
++            if skip_existing and (writer.manifest_root / f"{output_stem}.jsonl").exists():
++                audio_path.unlink(missing_ok=True)
++                continue
++
++            record = ManifestRecord(
++                id=f"{output_stem}_{base_name}",
++                audio_path=str(audio_path),
++                text=text,
++                language_id=language_id,
++                dataset_name=recipe.name,
++                source_id=source_id,
++                speaker_id=_extract_speaker_id(sample, meta),
++                duration_s=duration_s,
++                config_name=config_name,
++            )
++            writer.write(
++                output_stem=output_stem,
++                record=record,
++                repeat_hint=recipe.repeat_hint,
++                source_configs=recipe.config_names,
++                notes=recipe.notes,
++                role=split_role,
++            )
++            seen_source_ids.add(dedupe_key)
++            if split_role == "train":
++                total_hours += duration_s / 3600.0
++                train_records += 1
++            else:
++                dev_records += 1
++            record_count += 1
++
++
++def _build_emilia_recipe(
++    recipe: CorpusRecipe,
++    writer: ManifestWriter,
++    audio_root: Path,
++    hf_token: Optional[str],
++    skip_existing: bool,
++):
++    dataset = _iter_hf_rows(
++        dataset_id=recipe.dataset_id,
++        config_name=None,
++        split_name=recipe.split_name,
++        hf_token=hf_token,
++    )
++
++    train_hours_total = 0.0
++    train_hours_by_lang: dict[str, float] = defaultdict(float)
++    train_records_by_lang: dict[str, int] = defaultdict(int)
++    dev_records_by_lang: dict[str, int] = defaultdict(int)
++    seen_source_ids: set[str] = set()
++
++    for sample in dataset:
++        meta = _coerce_json_metadata(sample)
++        text = _extract_text(sample, meta)
++        if not text:
++            continue
++
++        language_id = _resolve_language_id(
++            _candidate(sample, LANGUAGE_KEYS) or _candidate(meta, LANGUAGE_KEYS)
++        )
++        if language_id not in STAGE1_EMILIA_LANGUAGES:
++            continue
++
++        source_id = _extract_source_id(sample, meta, fallback_prefix="emilia")
++        dedupe_key = f"emilia:{source_id}"
++        if dedupe_key in seen_source_ids:
++            continue
++
++        role = "train"
++        if dev_records_by_lang[language_id] < recipe.min_dev_examples_per_language:
++            role = "dev"
++        elif _stable_bucket(source_id) < int(recipe.hash_dev_ratio * 10_000):
++            role = "dev"
++
++        relative_dir = audio_root / f"emilia_{language_id}_{role}"
++        base_name = _safe_name(source_id)
++        try:
++            audio_path = _materialise_audio(sample, destination_base=relative_dir / base_name)
++        except Exception:
++            continue
++
++        duration_s = _extract_duration_hint_seconds(sample, meta) or _audio_duration_seconds(audio_path)
++        if duration_s < recipe.min_duration_s or duration_s > recipe.max_duration_s:
++            audio_path.unlink(missing_ok=True)
++            continue
++
++        if role == "train":
++            if recipe.max_hours_total is not None and train_hours_total + (duration_s / 3600.0) > recipe.max_hours_total:
++                audio_path.unlink(missing_ok=True)
++                continue
++            if recipe.max_hours_per_language is not None and (
++                train_hours_by_lang[language_id] + (duration_s / 3600.0) > recipe.max_hours_per_language
++            ):
++                audio_path.unlink(missing_ok=True)
++                continue
++            if recipe.max_records is not None and train_records_by_lang[language_id] >= recipe.max_records:
++                audio_path.unlink(missing_ok=True)
++                continue
++        elif recipe.max_records is not None and dev_records_by_lang[language_id] >= max(4, recipe.max_records // 4):
++            audio_path.unlink(missing_ok=True)
++            continue
++
++        output_stem = f"emilia_{language_id}_{role}"
++        if skip_existing and (writer.manifest_root / f"{output_stem}.jsonl").exists():
++            continue
++
++        record = ManifestRecord(
++            id=f"{output_stem}_{base_name}",
++            audio_path=str(audio_path),
++            text=text,
++            language_id=language_id,
++            dataset_name="emilia",
++            source_id=source_id,
++            speaker_id=_extract_speaker_id(sample, meta),
++            duration_s=duration_s,
++            config_name=None,
++        )
++        writer.write(
++            output_stem=output_stem,
++            record=record,
++            repeat_hint=recipe.repeat_hint,
++            source_configs=["train"],
++            notes=recipe.notes,
++            role=role,
++        )
++        seen_source_ids.add(dedupe_key)
++        if role == "train":
++            train_hours_total += duration_s / 3600.0
++            train_hours_by_lang[language_id] += duration_s / 3600.0
++            train_records_by_lang[language_id] += 1
++        else:
++            dev_records_by_lang[language_id] += 1
++
++
++def _write_local_placeholder(recipe: CorpusRecipe, manifest_root: Path) -> list[Path]:
++    placeholder_dir = manifest_root / "stage2_local_templates"
++    placeholder_dir.mkdir(parents=True, exist_ok=True)
++    readme_path = placeholder_dir / f"{recipe.name}.README.md"
++    example_jsonl = placeholder_dir / f"{recipe.name}_train.example.jsonl"
++    readme_path.write_text(
++        "\n".join(
++            [
++                f"# {recipe.name}",
++                "",
++                recipe.notes,
++                "",
++                "Expected JSONL row format:",
++                '  {"id":"utt_0001","audio_path":"/abs/path.wav","text":"...","language_id":"en","speaker_id":"spk_01"}',
++                "",
++                "Place your real manifests under a stable path on /workspace and pass them",
++                "to the tokenization and data-config stages.",
++            ]
++        ),
++        encoding="utf-8",
++    )
++    example_jsonl.write_text(
++        json.dumps(
++            {
++                "id": f"{recipe.name}_example_0001",
++                "audio_path": f"/workspace/data/local/{recipe.name}/sample.wav",
++                "text": "Replace this line with the transcript for a real sample.",
++                "language_id": "en",
++                "speaker_id": "speaker-0001",
++            }
++        )
++        + "\n",
++        encoding="utf-8",
++    )
++    return [example_jsonl]
++
++
++def write_manifest_plan(recipes: Iterable[CorpusRecipe], output_path: str):
++    payload = [asdict(recipe) for recipe in recipes]
++    Path(output_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+diff --git a/omnivoice/data/processor.py b/omnivoice/data/processor.py
+index 7e3ec1b..38db004 100644
+--- a/omnivoice/data/processor.py
++++ b/omnivoice/data/processor.py
+@@ -154,6 +154,11 @@ class OmniVoiceSampleProcessor:
+             labels = audio_labels
+             total_length = input_ids.shape[1]
+             audio_mask = torch.ones(total_length, dtype=torch.bool)
++            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
++            if prompt_length > 0:
++                prompt_mask[:prompt_length] = True
++            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
++            target_audio_mask[prompt_length:] = True
+         else:
+             input_ids = torch.cat([style_inputs, text_inputs, audio_inputs], dim=1)
+             labels = torch.cat([style_labels, text_labels, audio_labels], dim=1)
+@@ -161,11 +166,17 @@ class OmniVoiceSampleProcessor:
+             audio_start_idx = style_inputs.shape[1] + text_inputs.shape[1]
+             audio_mask = torch.zeros(total_length, dtype=torch.bool)
+             audio_mask[audio_start_idx:] = True
++            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
++            prompt_mask[audio_start_idx : audio_start_idx + prompt_length] = True
++            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
++            target_audio_mask[audio_start_idx + prompt_length :] = True
+ 
+         return_dict = {
+             "input_ids": input_ids,  # [C, L]
+             "labels": labels,  # [C, L]
+             "audio_mask": audio_mask,  # [L]
++            "prompt_mask": prompt_mask,  # [L]
++            "target_audio_mask": target_audio_mask,  # [L]
+             "length": total_length,
+         }
+ 
+@@ -240,6 +251,11 @@ class OmniVoiceSimpleSampleProcessor:
+             labels = audio_labels
+             total_length = input_ids.shape[1]
+             audio_mask = torch.ones(total_length, dtype=torch.bool)
++            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
++            if prompt_length > 0:
++                prompt_mask[:prompt_length] = True
++            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
++            target_audio_mask[prompt_length:] = True
+         else:
+             input_ids = torch.cat([text_inputs, audio_inputs], dim=1)
+             labels = torch.cat([text_labels, audio_labels], dim=1)
+@@ -247,11 +263,17 @@ class OmniVoiceSimpleSampleProcessor:
+             audio_start_idx = text_inputs.shape[1]
+             audio_mask = torch.zeros(total_length, dtype=torch.bool)
+             audio_mask[audio_start_idx:] = True
++            prompt_mask = torch.zeros(total_length, dtype=torch.bool)
++            prompt_mask[audio_start_idx : audio_start_idx + prompt_length] = True
++            target_audio_mask = torch.zeros(total_length, dtype=torch.bool)
++            target_audio_mask[audio_start_idx + prompt_length :] = True
+ 
+         return_dict = {
+             "input_ids": input_ids,  # [C, L]
+             "labels": labels,  # [C, L]
+             "audio_mask": audio_mask,  # [L]
++            "prompt_mask": prompt_mask,  # [L]
++            "target_audio_mask": target_audio_mask,  # [L]
+             "length": total_length,
+         }
  
 diff --git a/omnivoice/eval/benchmark_summary.py b/omnivoice/eval/benchmark_summary.py
 new file mode 100644
@@ -703,6 +2975,182 @@ index 0000000..6f52d80
 +        return "n/a"
 +    return f"{value:.{digits}f}"
 +
+diff --git a/omnivoice/eval/cloneval_benchmark.py b/omnivoice/eval/cloneval_benchmark.py
+new file mode 100644
+index 0000000..cfe1fe3
+--- /dev/null
++++ b/omnivoice/eval/cloneval_benchmark.py
+@@ -0,0 +1,170 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++
++"""Run OmniVoice-compatible models against the official ClonEval benchmark.
++
++This script bridges the OmniVoice JSONL test-list format and the ClonEval
++directory-based evaluation API. It:
++
++1. Generates cloned speech with ``OmniVoice.generate``.
++2. Materializes reference audio into an ``original_dir`` using the same file ids.
++3. Runs the official ClonEval evaluator.
++4. Saves speed and memory summaries next to the metric CSVs.
++"""
++
++import argparse
++import csv
++import json
++import os
++import sys
++import time
++from pathlib import Path
++
++import psutil
++import torch
++import torchaudio
++
++from omnivoice.models.omnivoice import OmniVoice
++from omnivoice.utils.audio import load_audio
++
++
++def get_parser():
++    parser = argparse.ArgumentParser(description="Run Cloneval with OmniVoice")
++    parser.add_argument("--model", type=str, required=True)
++    parser.add_argument("--test_list", type=str, required=True)
++    parser.add_argument("--work_dir", type=str, required=True)
++    parser.add_argument(
++        "--cloneval_repo",
++        type=str,
++        default="../cloneval",
++        help="Path to the cloned official ClonEval repository",
++    )
++    parser.add_argument("--num_step", type=int, default=32)
++    parser.add_argument("--guidance_scale", type=float, default=2.0)
++    parser.add_argument("--t_shift", type=float, default=0.1)
++    parser.add_argument("--limit", type=int, default=0)
++    parser.add_argument("--device_map", type=str, default="cpu")
++    parser.add_argument("--dtype", type=str, default="float32")
++    parser.add_argument("--evaluate_emotion_transfer", action="store_true")
++    return parser
++
++
++def read_jsonl(path):
++    with open(path, "r", encoding="utf-8") as f:
++        return [json.loads(line) for line in f if line.strip()]
++
++
++def ensure_wav(path: Path, wav: torch.Tensor, sample_rate: int):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    torchaudio.save(str(path), wav.cpu(), sample_rate)
++
++
++def save_speed_report(path: Path, rows, summary):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with open(path, "w", encoding="utf-8", newline="") as f:
++        writer = csv.DictWriter(
++            f,
++            fieldnames=[
++                "id",
++                "latency_s",
++                "output_duration_s",
++                "real_time_factor",
++                "rss_bytes",
++            ],
++        )
++        writer.writeheader()
++        writer.writerows(rows)
++    with open(path.with_suffix(".summary.json"), "w", encoding="utf-8") as f:
++        json.dump(summary, f, indent=2)
++
++
++def main():
++    args = get_parser().parse_args()
++    sys.path.insert(0, str(Path(args.cloneval_repo).resolve()))
++    from cloneval.cloneval import ClonEval
++
++    dtype = getattr(torch, args.dtype)
++    model = OmniVoice.from_pretrained(
++        args.model,
++        device_map=args.device_map,
++        dtype=dtype,
++    )
++    process = psutil.Process(os.getpid())
++
++    entries = read_jsonl(args.test_list)
++    if args.limit > 0:
++        entries = entries[: args.limit]
++
++    work_dir = Path(args.work_dir)
++    ref_dir = work_dir / "reference_audio"
++    gen_dir = work_dir / "generated_audio"
++    metrics_dir = work_dir / "metrics"
++    ref_dir.mkdir(parents=True, exist_ok=True)
++    gen_dir.mkdir(parents=True, exist_ok=True)
++    metrics_dir.mkdir(parents=True, exist_ok=True)
++
++    rows = []
++    for entry in entries:
++        item_id = entry["id"]
++        ref_audio = entry["ref_audio"]
++        ref_text = entry.get("ref_text")
++        language = entry.get("language_name") or entry.get("language_id")
++
++        wav = load_audio(ref_audio, model.sampling_rate)
++        ensure_wav(ref_dir / f"{item_id}.wav", wav, model.sampling_rate)
++
++        start = time.perf_counter()
++        generated = model.generate(
++            text=entry["text"],
++            language=language,
++            ref_audio=ref_audio,
++            ref_text=ref_text,
++            num_step=args.num_step,
++            guidance_scale=args.guidance_scale,
++            t_shift=args.t_shift,
++        )[0]
++        latency_s = time.perf_counter() - start
++        ensure_wav(gen_dir / f"{item_id}.wav", generated, model.sampling_rate)
++
++        output_duration_s = generated.size(-1) / model.sampling_rate
++        rows.append(
++            {
++                "id": item_id,
++                "latency_s": round(latency_s, 4),
++                "output_duration_s": round(output_duration_s, 4),
++                "real_time_factor": round(
++                    latency_s / max(output_duration_s, 1e-6),
++                    4,
++                ),
++                "rss_bytes": process.memory_info().rss,
++            }
++        )
++
++    cloneval = ClonEval()
++    cloneval.evaluate(
++        original_dir=str(ref_dir),
++        cloned_dir=str(gen_dir),
++        evaluate_emotion_transfer=args.evaluate_emotion_transfer,
++        output_dir=str(metrics_dir),
++    )
++
++    summary = {
++        "num_samples": len(rows),
++        "mean_latency_s": sum(r["latency_s"] for r in rows) / max(len(rows), 1),
++        "mean_output_duration_s": sum(r["output_duration_s"] for r in rows)
++        / max(len(rows), 1),
++        "mean_real_time_factor": sum(r["real_time_factor"] for r in rows)
++        / max(len(rows), 1),
++        "max_rss_bytes": max((r["rss_bytes"] for r in rows), default=0),
++        "reference_dir": str(ref_dir),
++        "generated_dir": str(gen_dir),
++        "metrics_dir": str(metrics_dir),
++    }
++    save_speed_report(metrics_dir / "runtime_metrics.csv", rows, summary)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/omnivoice/models/aoede.py b/omnivoice/models/aoede.py
 new file mode 100644
 index 0000000..2b1dd62
@@ -723,26 +3171,315 @@ index 0000000..2b1dd62
 +    ProsodyPlanAdapter,
 +    SpeakerMemoryEncoder,
 +)
+diff --git a/omnivoice/models/mnemosvoice.py b/omnivoice/models/mnemosvoice.py
+new file mode 100644
+index 0000000..be6052d
+--- /dev/null
++++ b/omnivoice/models/mnemosvoice.py
+@@ -0,0 +1,267 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.        (authors:  Han Zhu)
++#
++# See ../../LICENSE for clarification regarding multiple authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""MnemosVoice modules for speaker-memory and prosody-plan conditioning.
++
++This file contains lightweight components that can be enabled inside the
++existing OmniVoice model without changing the public inference API:
++
++- ``SpeakerMemoryEncoder`` compresses prompt audio tokens into persistent
++  speaker memory tokens.
++- ``ProsodyPlanAdapter`` predicts a coarse acoustic plan over downsampled
++  target positions.
++- ``MemoryConditioner`` injects the speaker memory and plan tokens into the
++  target hidden states before the audio-token heads.
++
++The design goal is to improve zero-shot voice cloning without replacing the
++baseline LLM-backed masked audio-token decoder.
++"""
++
++from typing import Optional, Tuple
++
++import torch
++import torch.nn as nn
++import torch.nn.functional as F
++
++
++def masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
++    """Mean-pool a sequence with a boolean mask."""
++    weights = mask.to(x.dtype).unsqueeze(-1)
++    denom = weights.sum(dim=1).clamp_min(1.0)
++    return (x * weights).sum(dim=1) / denom
++
++
++def pool_target_states(
++    target_hidden: torch.Tensor,
++    stride: int,
++) -> torch.Tensor:
++    """Average-pool a target sequence into coarse planning steps."""
++    if target_hidden.size(1) == 0:
++        return target_hidden
++    pad = (-target_hidden.size(1)) % stride
++    if pad > 0:
++        target_hidden = F.pad(target_hidden, (0, 0, 0, pad))
++    bsz, total_steps, dim = target_hidden.shape
++    target_hidden = target_hidden.view(bsz, total_steps // stride, stride, dim)
++    return target_hidden.mean(dim=2)
++
++
++def pool_target_tokens(
++    target_tokens: torch.Tensor,
++    stride: int,
++) -> torch.Tensor:
++    """Create coarse token targets by keeping the first item in each block."""
++    if target_tokens.size(1) == 0:
++        return target_tokens
++    pad = (-target_tokens.size(1)) % stride
++    if pad > 0:
++        pad_values = target_tokens[:, -1:].expand(-1, pad)
++        target_tokens = torch.cat([target_tokens, pad_values], dim=1)
++    return target_tokens[:, ::stride]
++
++
++class SpeakerMemoryEncoder(nn.Module):
++    """Compress prompt audio embeddings into a small speaker-memory bank."""
++
++    def __init__(
++        self,
++        hidden_size: int,
++        num_memory_tokens: int,
++        num_heads: int,
++        dropout: float,
++    ):
++        super().__init__()
++        self.norm = nn.LayerNorm(hidden_size)
++        self.depthwise_conv = nn.Conv1d(
++            hidden_size,
++            hidden_size,
++            kernel_size=5,
++            padding=2,
++            groups=hidden_size,
++        )
++        self.conv_proj = nn.Linear(hidden_size, hidden_size)
++        self.memory_queries = nn.Parameter(
++            torch.randn(num_memory_tokens, hidden_size) * (hidden_size**-0.5)
++        )
++        self.memory_attn = nn.MultiheadAttention(
++            hidden_size,
++            num_heads,
++            batch_first=True,
++            dropout=dropout,
++        )
++        self.global_proj = nn.Sequential(
++            nn.LayerNorm(hidden_size),
++            nn.Linear(hidden_size, hidden_size * 2),
++            nn.SiLU(),
++            nn.Linear(hidden_size * 2, hidden_size),
++        )
++        self.null_memory = nn.Parameter(torch.randn(num_memory_tokens, hidden_size))
++        self.null_global = nn.Parameter(torch.randn(hidden_size))
++
++    def forward(
++        self,
++        prompt_hidden: torch.Tensor,
++        prompt_mask: torch.Tensor,
++    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++        """Return speaker tokens, pooled speaker vector, and valid-prompt mask."""
++        bsz = prompt_hidden.size(0)
++        valid_prompt = prompt_mask.any(dim=1)
++        if prompt_hidden.size(1) == 0:
++            return (
++                self.null_memory.unsqueeze(0).expand(bsz, -1, -1),
++                self.null_global.unsqueeze(0).expand(bsz, -1),
++                valid_prompt,
++            )
++
++        hidden = self.norm(prompt_hidden)
++        conv = self.depthwise_conv(hidden.transpose(1, 2)).transpose(1, 2)
++        hidden = hidden + self.conv_proj(conv)
++
++        memory_queries = self.memory_queries.unsqueeze(0).expand(bsz, -1, -1)
++        memory_tokens, _ = self.memory_attn(
++            query=memory_queries,
++            key=hidden,
++            value=hidden,
++            key_padding_mask=~prompt_mask,
++        )
++        pooled = self.global_proj(masked_mean(hidden, prompt_mask))
++
++        if not valid_prompt.all():
++            memory_tokens = memory_tokens.clone()
++            pooled = pooled.clone()
++            memory_tokens[~valid_prompt] = self.null_memory
++            pooled[~valid_prompt] = self.null_global
++
++        return memory_tokens, pooled, valid_prompt
++
++
++class ProsodyPlanAdapter(nn.Module):
++    """Predict and embed a coarse target-side acoustic plan."""
++
++    def __init__(
++        self,
++        hidden_size: int,
++        vocab_size: int,
++        stride: int,
++        num_heads: int,
++        dropout: float,
++    ):
++        super().__init__()
++        self.stride = stride
++        self.query_norm = nn.LayerNorm(hidden_size)
++        self.memory_norm = nn.LayerNorm(hidden_size)
++        self.cross_attn = nn.MultiheadAttention(
++            hidden_size,
++            num_heads,
++            batch_first=True,
++            dropout=dropout,
++        )
++        self.ffn = nn.Sequential(
++            nn.LayerNorm(hidden_size),
++            nn.Linear(hidden_size, hidden_size * 4),
++            nn.GELU(),
++            nn.Linear(hidden_size * 4, hidden_size),
++        )
++        self.plan_head = nn.Linear(hidden_size, vocab_size)
++        self.plan_embedding = nn.Embedding(vocab_size, hidden_size)
++        self.null_plan = nn.Parameter(torch.randn(1, hidden_size))
++
++    def forward(
++        self,
++        target_hidden: torch.Tensor,
++        speaker_tokens: torch.Tensor,
++        target_tokens: Optional[torch.Tensor] = None,
++    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
++        """Return plan memory, optional plan loss, and chosen coarse tokens."""
++        if target_hidden.size(1) == 0:
++            empty_tokens = target_hidden.new_zeros(
++                (target_hidden.size(0), 0), dtype=torch.long
++            )
++            return (
++                self.null_plan.expand(target_hidden.size(0), -1, -1),
++                None,
++                empty_tokens,
++            )
++
++        plan_hidden = pool_target_states(target_hidden, self.stride)
++        plan_hidden = self.query_norm(plan_hidden)
++        speaker_tokens = self.memory_norm(speaker_tokens)
++        attended, _ = self.cross_attn(plan_hidden, speaker_tokens, speaker_tokens)
++        plan_hidden = plan_hidden + attended
++        plan_hidden = plan_hidden + self.ffn(plan_hidden)
++        plan_logits = self.plan_head(plan_hidden)
++
++        plan_loss = None
++        if target_tokens is not None and target_tokens.size(1) > 0:
++            coarse_targets = pool_target_tokens(target_tokens, self.stride)
++            max_steps = min(coarse_targets.size(1), plan_logits.size(1))
++            coarse_targets = coarse_targets[:, :max_steps]
++            plan_logits = plan_logits[:, :max_steps]
++            plan_loss = F.cross_entropy(
++                plan_logits.reshape(-1, plan_logits.size(-1)),
++                coarse_targets.reshape(-1),
++            )
++            plan_tokens = coarse_targets
++        else:
++            plan_tokens = plan_logits.argmax(dim=-1)
++
++        plan_memory = plan_hidden[:, : plan_tokens.size(1)] + self.plan_embedding(
++            plan_tokens
++        )
++        return plan_memory, plan_loss, plan_tokens
++
++
++class MemoryConditioner(nn.Module):
++    """Inject speaker memory and coarse plan tokens into target states."""
++
++    def __init__(self, hidden_size: int, num_heads: int, dropout: float):
++        super().__init__()
++        self.query_norm = nn.LayerNorm(hidden_size)
++        self.memory_norm = nn.LayerNorm(hidden_size)
++        self.cross_attn = nn.MultiheadAttention(
++            hidden_size,
++            num_heads,
++            batch_first=True,
++            dropout=dropout,
++        )
++        self.gate = nn.Linear(hidden_size * 2, hidden_size)
++        self.ffn = nn.Sequential(
++            nn.LayerNorm(hidden_size),
++            nn.Linear(hidden_size, hidden_size * 4),
++            nn.GELU(),
++            nn.Linear(hidden_size * 4, hidden_size),
++        )
++
++    def forward(
++        self,
++        target_hidden: torch.Tensor,
++        memory_tokens: torch.Tensor,
++    ) -> torch.Tensor:
++        if target_hidden.size(1) == 0 or memory_tokens.size(1) == 0:
++            return target_hidden
++
++        attended, _ = self.cross_attn(
++            self.query_norm(target_hidden),
++            self.memory_norm(memory_tokens),
++            self.memory_norm(memory_tokens),
++        )
++        gate = torch.sigmoid(
++            self.gate(torch.cat([target_hidden, attended], dim=-1))
++        )
++        target_hidden = target_hidden + gate * attended
++        target_hidden = target_hidden + self.ffn(target_hidden)
++        return target_hidden
 diff --git a/omnivoice/models/omnivoice.py b/omnivoice/models/omnivoice.py
-index b69e72c..c770071 100644
+index a3e8b27..c770071 100644
 --- a/omnivoice/models/omnivoice.py
 +++ b/omnivoice/models/omnivoice.py
-@@ -59,7 +59,7 @@ from omnivoice.utils.audio import (
+@@ -59,6 +59,11 @@ from omnivoice.utils.audio import (
      remove_silence,
      trim_long_audio,
  )
--from omnivoice.models.mnemosvoice import (
 +from omnivoice.models.aoede import (
-     MemoryConditioner,
-     ProsodyPlanAdapter,
-     SpeakerMemoryEncoder,
-@@ -177,9 +177,12 @@ class OmniVoiceConfig(PretrainedConfig):
-         speaker_loss_weight: float = 0.05,
-         memory_conditioning_num_heads: int = 8,
-         memory_conditioning_dropout: float = 0.1,
--        mnemosvoice_use_speaker_memory: bool = True,
--        mnemosvoice_use_prosody_planner: bool = True,
--        mnemosvoice_use_speaker_consistency_loss: bool = True,
++    MemoryConditioner,
++    ProsodyPlanAdapter,
++    SpeakerMemoryEncoder,
++)
+ from omnivoice.utils.duration import RuleDurationEstimator
+ from omnivoice.utils.lang_map import LANG_IDS, LANG_NAMES
+ from omnivoice.utils.text import add_punctuation, chunk_text_punctuation
+@@ -146,6 +151,8 @@ class GenerationTask:
+ class OmniVoiceModelOutput(ModelOutput):
+     loss: Optional[torch.Tensor] = None
+     logits: Optional[torch.Tensor] = None
++    plan_loss: Optional[torch.Tensor] = None
++    speaker_loss: Optional[torch.Tensor] = None
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -163,6 +170,19 @@ class OmniVoiceConfig(PretrainedConfig):
+         audio_mask_id: int = 1024,
+         num_audio_codebook: int = 8,
+         audio_codebook_weights: Optional[list[float]] = None,
++        architecture_variant: str = "omnivoice",
++        speaker_memory_num_tokens: int = 8,
++        planner_stride: int = 4,
++        planner_loss_weight: float = 0.2,
++        speaker_loss_weight: float = 0.05,
++        memory_conditioning_num_heads: int = 8,
++        memory_conditioning_dropout: float = 0.1,
 +        aoede_use_speaker_memory: Optional[bool] = None,
 +        aoede_use_prosody_planner: Optional[bool] = None,
 +        aoede_use_speaker_consistency_loss: Optional[bool] = None,
@@ -752,21 +3489,19 @@ index b69e72c..c770071 100644
          llm_config: Optional[Union[dict, PretrainedConfig]] = None,
          **kwargs,
      ):
-@@ -193,6 +196,8 @@ class OmniVoiceConfig(PretrainedConfig):
+@@ -176,6 +196,48 @@ class OmniVoiceConfig(PretrainedConfig):
          self.audio_vocab_size = audio_vocab_size
          self.audio_mask_id = audio_mask_id
          self.num_audio_codebook = num_audio_codebook
 +        if architecture_variant == "mnemosvoice":
 +            architecture_variant = "aoede"
-         self.architecture_variant = architecture_variant
-         self.speaker_memory_num_tokens = speaker_memory_num_tokens
-         self.planner_stride = planner_stride
-@@ -200,10 +205,38 @@ class OmniVoiceConfig(PretrainedConfig):
-         self.speaker_loss_weight = speaker_loss_weight
-         self.memory_conditioning_num_heads = memory_conditioning_num_heads
-         self.memory_conditioning_dropout = memory_conditioning_dropout
--        self.mnemosvoice_use_speaker_memory = mnemosvoice_use_speaker_memory
--        self.mnemosvoice_use_prosody_planner = mnemosvoice_use_prosody_planner
++        self.architecture_variant = architecture_variant
++        self.speaker_memory_num_tokens = speaker_memory_num_tokens
++        self.planner_stride = planner_stride
++        self.planner_loss_weight = planner_loss_weight
++        self.speaker_loss_weight = speaker_loss_weight
++        self.memory_conditioning_num_heads = memory_conditioning_num_heads
++        self.memory_conditioning_dropout = memory_conditioning_dropout
 +        self.aoede_use_speaker_memory = (
 +            aoede_use_speaker_memory
 +            if aoede_use_speaker_memory is not None
@@ -797,85 +3532,685 @@ index b69e72c..c770071 100644
 +        # Preserve legacy attribute names while we transition configs/checkpoints.
 +        self.mnemosvoice_use_speaker_memory = self.aoede_use_speaker_memory
 +        self.mnemosvoice_use_prosody_planner = self.aoede_use_prosody_planner
-         self.mnemosvoice_use_speaker_consistency_loss = (
--            mnemosvoice_use_speaker_consistency_loss
++        self.mnemosvoice_use_speaker_consistency_loss = (
 +            self.aoede_use_speaker_consistency_loss
-         )
++        )
          if audio_codebook_weights is None:
              audio_codebook_weights = [8, 8, 6, 6, 4, 4, 2, 2]
-@@ -245,18 +278,18 @@ class OmniVoice(PreTrainedModel):
-         self.prosody_planner = None
-         self.memory_conditioner = None
-         self.target_speaker_proj = None
--        if self._mnemosvoice_enabled:
-+        if self._aoede_enabled:
-             hidden_size = self.config.llm_config.hidden_size
-             num_heads = self.config.memory_conditioning_num_heads
-             dropout = self.config.memory_conditioning_dropout
--            if self.config.mnemosvoice_use_speaker_memory:
-+            if self.config.aoede_use_speaker_memory:
-                 self.speaker_memory_encoder = SpeakerMemoryEncoder(
-                     hidden_size=hidden_size,
-                     num_memory_tokens=self.config.speaker_memory_num_tokens,
-                     num_heads=num_heads,
-                     dropout=dropout,
-                 )
--            if self.config.mnemosvoice_use_prosody_planner:
-+            if self.config.aoede_use_prosody_planner:
-                 self.prosody_planner = ProsodyPlanAdapter(
-                     hidden_size=hidden_size,
-                     vocab_size=self.config.audio_vocab_size,
-@@ -269,7 +302,7 @@ class OmniVoice(PreTrainedModel):
-                 num_heads=num_heads,
-                 dropout=dropout,
-             )
--            if self.config.mnemosvoice_use_speaker_consistency_loss:
-+            if self.config.aoede_use_speaker_consistency_loss:
-                 self.target_speaker_proj = nn.Sequential(
-                     nn.LayerNorm(hidden_size),
-                     nn.Linear(hidden_size, hidden_size),
-@@ -291,7 +324,11 @@ class OmniVoice(PreTrainedModel):
+         self.audio_codebook_weights = audio_codebook_weights
+@@ -212,6 +274,40 @@ class OmniVoice(PreTrainedModel):
+             bias=False,
+         )
  
-     @property
-     def _mnemosvoice_enabled(self) -> bool:
--        return getattr(self.config, "architecture_variant", "omnivoice") == "mnemosvoice"
++        self.speaker_memory_encoder = None
++        self.prosody_planner = None
++        self.memory_conditioner = None
++        self.target_speaker_proj = None
++        if self._aoede_enabled:
++            hidden_size = self.config.llm_config.hidden_size
++            num_heads = self.config.memory_conditioning_num_heads
++            dropout = self.config.memory_conditioning_dropout
++            if self.config.aoede_use_speaker_memory:
++                self.speaker_memory_encoder = SpeakerMemoryEncoder(
++                    hidden_size=hidden_size,
++                    num_memory_tokens=self.config.speaker_memory_num_tokens,
++                    num_heads=num_heads,
++                    dropout=dropout,
++                )
++            if self.config.aoede_use_prosody_planner:
++                self.prosody_planner = ProsodyPlanAdapter(
++                    hidden_size=hidden_size,
++                    vocab_size=self.config.audio_vocab_size,
++                    stride=self.config.planner_stride,
++                    num_heads=num_heads,
++                    dropout=dropout,
++                )
++            self.memory_conditioner = MemoryConditioner(
++                hidden_size=hidden_size,
++                num_heads=num_heads,
++                dropout=dropout,
++            )
++            if self.config.aoede_use_speaker_consistency_loss:
++                self.target_speaker_proj = nn.Sequential(
++                    nn.LayerNorm(hidden_size),
++                    nn.Linear(hidden_size, hidden_size),
++                )
++
+         self.normalized_audio_codebook_weights = [
+             w / sum(config.audio_codebook_weights)
+             for w in config.audio_codebook_weights
+@@ -226,6 +322,14 @@ class OmniVoice(PreTrainedModel):
+         self.sampling_rate = None
+         self._asr_pipe = None
+ 
++    @property
++    def _mnemosvoice_enabled(self) -> bool:
 +        return self._aoede_enabled
 +
 +    @property
 +    def _aoede_enabled(self) -> bool:
 +        return getattr(self.config, "architecture_variant", "omnivoice") == "aoede"
- 
++
      @classmethod
      def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-@@ -465,7 +502,7 @@ class OmniVoice(PreTrainedModel):
-         all_masked = (input_ids == self.config.audio_mask_id).all(dim=1)
-         return audio_mask & all_masked
+         train_mode = kwargs.pop("train", False)
+@@ -367,6 +471,182 @@ class OmniVoice(PreTrainedModel):
  
--    def _apply_mnemosvoice_conditioning(
+         return torch.where(audio_mask.unsqueeze(-1), audio_embeds, text_embeds)
+ 
++    def _audio_token_embeddings(self, audio_ids: torch.Tensor) -> torch.Tensor:
++        """Embed a [C, T] or [B, C, T] audio-token tensor into [T, H]/[B, T, H]."""
++        squeeze = False
++        if audio_ids.dim() == 2:
++            audio_ids = audio_ids.unsqueeze(0)
++            squeeze = True
++        shifted_ids = audio_ids + self.codebook_layer_offsets.view(1, -1, 1).to(
++            audio_ids.device
++        )
++        embeds = self.audio_embeddings(shifted_ids).sum(dim=1)
++        return embeds.squeeze(0) if squeeze else embeds
++
++    def _reconstruct_audio_targets(
++        self,
++        input_ids: torch.Tensor,
++        labels: torch.Tensor,
++    ) -> torch.Tensor:
++        """Recover full target audio tokens from masked inputs and labels."""
++        if labels is None:
++            return input_ids
++        return torch.where(labels != -100, labels, input_ids)
++
++    def _default_target_audio_mask(
++        self,
++        input_ids: torch.Tensor,
++        audio_mask: torch.Tensor,
++    ) -> torch.Tensor:
++        """Fallback inference-only target mask when explicit metadata is absent."""
++        all_masked = (input_ids == self.config.audio_mask_id).all(dim=1)
++        return audio_mask & all_masked
++
 +    def _apply_aoede_conditioning(
-         self,
-         hidden_states: torch.Tensor,
-         input_ids: torch.Tensor,
-@@ -476,7 +513,7 @@ class OmniVoice(PreTrainedModel):
-         document_ids: Optional[torch.Tensor] = None,
-     ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-         """Apply prompt-memory and coarse planning to target hidden states."""
--        if not self._mnemosvoice_enabled:
++        self,
++        hidden_states: torch.Tensor,
++        input_ids: torch.Tensor,
++        audio_mask: torch.Tensor,
++        prompt_mask: Optional[torch.Tensor] = None,
++        target_audio_mask: Optional[torch.Tensor] = None,
++        labels: Optional[torch.Tensor] = None,
++        document_ids: Optional[torch.Tensor] = None,
++    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
++        """Apply prompt-memory and coarse planning to target hidden states."""
 +        if not self._aoede_enabled:
-             return hidden_states, None, None
++            return hidden_states, None, None
++
++        if prompt_mask is None:
++            prompt_mask = torch.zeros_like(audio_mask)
++        if target_audio_mask is None:
++            target_audio_mask = self._default_target_audio_mask(input_ids, audio_mask)
++
++        full_audio_targets = self._reconstruct_audio_targets(input_ids, labels)
++        conditioned = hidden_states.clone()
++        plan_losses = []
++        speaker_losses = []
++
++        for b in range(hidden_states.size(0)):
++            if document_ids is None:
++                doc_ids = [0]
++                batch_doc_ids = torch.zeros(
++                    hidden_states.size(1),
++                    dtype=torch.long,
++                    device=hidden_states.device,
++                )
++            else:
++                batch_doc_ids = document_ids[b].to(hidden_states.device)
++                doc_ids = [
++                    int(d.item())
++                    for d in torch.unique(batch_doc_ids)
++                    if int(d.item()) >= 0
++                ]
++
++            for doc_id in doc_ids:
++                if document_ids is None:
++                    doc_mask = torch.ones(
++                        hidden_states.size(1),
++                        dtype=torch.bool,
++                        device=hidden_states.device,
++                    )
++                else:
++                    doc_mask = batch_doc_ids == doc_id
++
++                prompt_positions = torch.nonzero(
++                    prompt_mask[b] & doc_mask, as_tuple=False
++                ).squeeze(-1)
++                target_positions = torch.nonzero(
++                    target_audio_mask[b] & doc_mask, as_tuple=False
++                ).squeeze(-1)
++
++                if target_positions.numel() == 0:
++                    continue
++
++                if prompt_positions.numel() > 0:
++                    prompt_tokens = input_ids[b, :, prompt_positions]
++                    prompt_hidden = self._audio_token_embeddings(prompt_tokens).unsqueeze(
++                        0
++                    )
++                    prompt_valid = torch.ones(
++                        1,
++                        prompt_hidden.size(1),
++                        dtype=torch.bool,
++                        device=hidden_states.device,
++                    )
++                else:
++                    prompt_hidden = hidden_states.new_zeros(
++                        (1, 0, hidden_states.size(-1))
++                    )
++                    prompt_valid = torch.zeros(
++                        1, 0, dtype=torch.bool, device=hidden_states.device
++                    )
++
++                if self.speaker_memory_encoder is not None:
++                    speaker_tokens, speaker_global, has_prompt = (
++                        self.speaker_memory_encoder(prompt_hidden, prompt_valid)
++                    )
++                else:
++                    has_prompt = prompt_valid.any(dim=1)
++                    if bool(has_prompt.item()):
++                        speaker_global = prompt_hidden.mean(dim=1)
++                    else:
++                        speaker_global = hidden_states.new_zeros(
++                            (1, hidden_states.size(-1))
++                        )
++                    speaker_tokens = speaker_global.unsqueeze(1)
++
++                target_hidden = hidden_states[b, target_positions].unsqueeze(0)
++                target_codebook0 = full_audio_targets[
++                    b : b + 1, 0, target_positions
++                ]
++
++                memory_parts = [speaker_tokens]
++                if self.prosody_planner is not None:
++                    plan_memory, plan_loss, _ = self.prosody_planner(
++                        target_hidden=target_hidden,
++                        speaker_tokens=speaker_tokens,
++                        target_tokens=target_codebook0 if labels is not None else None,
++                    )
++                    memory_parts.append(plan_memory)
++                    if plan_loss is not None:
++                        plan_losses.append(plan_loss)
++
++                if self.memory_conditioner is not None:
++                    memory_tokens = torch.cat(memory_parts, dim=1)
++                    conditioned_target = self.memory_conditioner(
++                        target_hidden=target_hidden,
++                        memory_tokens=memory_tokens,
++                    )
++                else:
++                    conditioned_target = target_hidden
++                conditioned[b, target_positions] = conditioned_target.squeeze(0)
++
++                if (
++                    self.target_speaker_proj is not None
++                    and bool(has_prompt.item())
++                ):
++                    pooled_target = conditioned_target.mean(dim=1)
++                    target_speaker = F.normalize(
++                        self.target_speaker_proj(pooled_target), dim=-1
++                    )
++                    ref_speaker = F.normalize(speaker_global, dim=-1)
++                    speaker_losses.append(
++                        1.0
++                        - F.cosine_similarity(
++                            target_speaker,
++                            ref_speaker,
++                            dim=-1,
++                        ).mean()
++                    )
++
++        plan_loss = None
++        speaker_loss = None
++        if plan_losses:
++            plan_loss = torch.stack(plan_losses).mean()
++        if speaker_losses:
++            speaker_loss = torch.stack(speaker_losses).mean()
++        return conditioned, plan_loss, speaker_loss
++
+     def forward(
+         self,
+         input_ids: torch.LongTensor,
+@@ -375,6 +655,8 @@ class OmniVoice(PreTrainedModel):
+         attention_mask: Optional[torch.Tensor] = None,
+         document_ids: Optional[torch.Tensor] = None,
+         position_ids: Optional[torch.LongTensor] = None,
++        prompt_mask: Optional[torch.Tensor] = None,
++        target_audio_mask: Optional[torch.Tensor] = None,
+     ):
  
-         if prompt_mask is None:
-@@ -647,8 +684,8 @@ class OmniVoice(PreTrainedModel):
+         inputs_embeds = self._prepare_embed_inputs(input_ids, audio_mask)
+@@ -400,6 +682,19 @@ class OmniVoice(PreTrainedModel):
+         )
+         hidden_states = llm_outputs[0]
  
-         plan_loss = None
-         speaker_loss = None
--        if self._mnemosvoice_enabled:
--            hidden_states, plan_loss, speaker_loss = self._apply_mnemosvoice_conditioning(
++        plan_loss = None
++        speaker_loss = None
 +        if self._aoede_enabled:
 +            hidden_states, plan_loss, speaker_loss = self._apply_aoede_conditioning(
-                 hidden_states=hidden_states,
-                 input_ids=input_ids,
-                 audio_mask=audio_mask,
++                hidden_states=hidden_states,
++                input_ids=input_ids,
++                audio_mask=audio_mask,
++                prompt_mask=prompt_mask,
++                target_audio_mask=target_audio_mask,
++                labels=labels,
++                document_ids=document_ids,
++            )
++
+         loss = None
+ 
+         # Shape: [B, S, C * Vocab]
+@@ -436,10 +731,16 @@ class OmniVoice(PreTrainedModel):
+                 self.normalized_audio_codebook_weights, device=audio_logits.device
+             )
+             loss = (layer_means * weights).sum()
++            if plan_loss is not None:
++                loss = loss + self.config.planner_loss_weight * plan_loss
++            if speaker_loss is not None:
++                loss = loss + self.config.speaker_loss_weight * speaker_loss
+ 
+         return OmniVoiceModelOutput(
+             loss=loss,
+             logits=audio_logits,
++            plan_loss=plan_loss,
++            speaker_loss=speaker_loss,
+         )
+ 
+     def supported_language_ids(self) -> set[str]:
+@@ -1110,9 +1411,25 @@ class OmniVoice(PreTrainedModel):
+         )
+         cond_audio_mask[0, cond_audio_start_idx:] = True
+ 
++        prompt_mask = torch.zeros(
++            1, cond_total_length, dtype=torch.bool, device=self.device
++        )
++        target_audio_mask = torch.zeros(
++            1, cond_total_length, dtype=torch.bool, device=self.device
++        )
++        if ref_audio_tokens is not None:
++            prompt_start = cond_audio_start_idx
++            prompt_end = prompt_start + ref_audio_tokens.size(-1)
++            prompt_mask[0, prompt_start:prompt_end] = True
++            target_audio_mask[0, prompt_end:] = True
++        else:
++            target_audio_mask[0, cond_audio_start_idx:] = True
++
+         return {
+             "input_ids": cond_input_ids,
+             "audio_mask": cond_audio_mask,
++            "prompt_mask": prompt_mask,
++            "target_audio_mask": target_audio_mask,
+         }
+ 
+     def _generate_iterative(
+@@ -1169,6 +1486,12 @@ class OmniVoice(PreTrainedModel):
+         batch_audio_mask = torch.zeros(
+             (2 * B, max_c_len), dtype=torch.bool, device=self.device
+         )
++        batch_prompt_mask = torch.zeros(
++            (2 * B, max_c_len), dtype=torch.bool, device=self.device
++        )
++        batch_target_audio_mask = torch.zeros(
++            (2 * B, max_c_len), dtype=torch.bool, device=self.device
++        )
+         batch_attention_mask = torch.zeros(
+             (2 * B, 1, max_c_len, max_c_len), dtype=torch.bool, device=self.device
+         )
+@@ -1179,11 +1502,14 @@ class OmniVoice(PreTrainedModel):
+             # Cond (0 ~ B-1)
+             batch_input_ids[i, :, :c_len] = inp["input_ids"]
+             batch_audio_mask[i, :c_len] = inp["audio_mask"]
++            batch_prompt_mask[i, :c_len] = inp["prompt_mask"]
++            batch_target_audio_mask[i, :c_len] = inp["target_audio_mask"]
+             batch_attention_mask[i, :, :c_len, :c_len] = True
+ 
+             # Uncond (B ~ 2B-1)
+             batch_input_ids[B + i, :, :u_len] = inp["input_ids"][..., -u_len:]
+             batch_audio_mask[B + i, :u_len] = inp["audio_mask"][..., -u_len:]
++            batch_target_audio_mask[B + i, :u_len] = True
+             batch_attention_mask[B + i, :, :u_len, :u_len] = True
+             if max_c_len > u_len:
+                 pad_diag = torch.arange(u_len, max_c_len, device=self.device)
+@@ -1228,6 +1554,8 @@ class OmniVoice(PreTrainedModel):
+             batch_logits = self(
+                 input_ids=batch_input_ids,
+                 audio_mask=batch_audio_mask,
++                prompt_mask=batch_prompt_mask,
++                target_audio_mask=batch_target_audio_mask,
+                 attention_mask=batch_attention_mask,
+             ).logits.to(torch.float32)
+ 
+diff --git a/omnivoice/runpod/__init__.py b/omnivoice/runpod/__init__.py
+new file mode 100644
+index 0000000..a323834
+--- /dev/null
++++ b/omnivoice/runpod/__init__.py
+@@ -0,0 +1,4 @@
++#!/usr/bin/env python3
++
++"""Runpod orchestration helpers for MnemosVoice experiments."""
++
+diff --git a/omnivoice/runpod/launcher.py b/omnivoice/runpod/launcher.py
+new file mode 100644
+index 0000000..8c93efe
+--- /dev/null
++++ b/omnivoice/runpod/launcher.py
+@@ -0,0 +1,309 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++
++"""Provision and manage Runpod pods for MnemosVoice experiments."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++from dataclasses import asdict, dataclass
++from pathlib import Path
++from typing import Any, Optional
++
++from omnivoice.utils.env import load_env_file
++
++
++REST_BASE_URL = "https://rest.runpod.io/v1"
++
++
++@dataclass(frozen=True)
++class RunpodLaunchConfig:
++    name: str
++    gpu_type_id: str
++    data_center_id: str
++    network_volume_name: str
++    network_volume_size_gb: int
++    image_name: str
++    repo_url: str
++    repo_branch: str
++    cloneval_repo_url: str
++    cloneval_repo_branch: str
++    workspace_mount: str = "/workspace"
++    repo_dir_name: str = "OmniVoice"
++    container_disk_gb: int = 50
++    vcpu_count: int = 16
++    memory_in_gb: int = 125
++    support_public_ip: bool = True
++    expose_jupyter: bool = False
++    hf_token: Optional[str] = None
++
++
++class RunpodClient:
++    def __init__(self, api_key: str, base_url: str = REST_BASE_URL):
++        self.api_key = api_key
++        self.base_url = base_url.rstrip("/")
++
++    def _headers(self):
++        return {"Authorization": f"Bearer {self.api_key}"}
++
++    def _request(self, method: str, path: str, payload: Optional[dict[str, Any]] = None, params: Optional[dict[str, Any]] = None):
++        import requests
++
++        url = f"{self.base_url}{path}"
++        response = requests.request(
++            method=method,
++            url=url,
++            headers=self._headers(),
++            json=payload,
++            params=params,
++            timeout=60,
++        )
++        response.raise_for_status()
++        if not response.content:
++            return {}
++        return response.json()
++
++    def list_pods(self, name: Optional[str] = None):
++        params = {"name": name} if name else None
++        data = self._request("GET", "/pods", params=params)
++        return data.get("pods", data if isinstance(data, list) else [])
++
++    def get_pod(self, pod_id: str):
++        return self._request("GET", f"/pods/{pod_id}")
++
++    def create_pod(self, payload: dict[str, Any]):
++        return self._request("POST", "/pods", payload=payload)
++
++    def start_pod(self, pod_id: str):
++        return self._request("POST", f"/pods/{pod_id}/start")
++
++    def delete_pod(self, pod_id: str):
++        return self._request("DELETE", f"/pods/{pod_id}")
++
++    def list_network_volumes(self):
++        data = self._request("GET", "/networkvolumes")
++        return data.get("networkVolumes", data if isinstance(data, list) else [])
++
++    def create_network_volume(self, payload: dict[str, Any]):
++        return self._request("POST", "/networkvolumes", payload=payload)
++
++
++def _bootstrap_command(config: RunpodLaunchConfig):
++    repo_path = f"{config.workspace_mount}/{config.repo_dir_name}"
++    cloneval_path = f"{config.workspace_mount}/cloneval"
++    return (
++        "set -euo pipefail;"
++        f" mkdir -p {config.workspace_mount};"
++        f" if [ ! -d {repo_path}/.git ]; then git clone --branch {config.repo_branch} {config.repo_url} {repo_path}; fi;"
++        f" if [ ! -d {cloneval_path}/.git ]; then git clone --branch {config.cloneval_repo_branch} {config.cloneval_repo_url} {cloneval_path}; fi;"
++        f" cd {repo_path};"
++        " bash examples/runpod/bootstrap_omnivoice.sh"
++    )
++
++
++def _pod_payload(config: RunpodLaunchConfig, network_volume_id: str):
++    ports = ["22/tcp"]
++    if config.expose_jupyter:
++        ports.append("8888/http")
++
++    env = {
++        "REPO_URL": config.repo_url,
++        "REPO_BRANCH": config.repo_branch,
++        "CLONEVAL_REPO_URL": config.cloneval_repo_url,
++        "CLONEVAL_REPO_BRANCH": config.cloneval_repo_branch,
++        "WORKSPACE": config.workspace_mount,
++    }
++    if config.hf_token:
++        env["HF_TOKEN"] = config.hf_token
++
++    return {
++        "cloudType": "SECURE",
++        "computeType": "GPU",
++        "containerDiskInGb": config.container_disk_gb,
++        "dataCenterIds": [config.data_center_id],
++        "dockerStartCmd": ["bash", "-lc", _bootstrap_command(config)],
++        "env": env,
++        "gpuCount": 1,
++        "gpuTypeIds": [config.gpu_type_id],
++        "imageName": config.image_name,
++        "memoryInGb": config.memory_in_gb,
++        "name": config.name,
++        "networkVolumeId": network_volume_id,
++        "ports": ports,
++        "supportPublicIp": config.support_public_ip,
++        "vcpuCount": config.vcpu_count,
++        "volumeMountPath": config.workspace_mount,
++    }
++
++
++def _network_volume_payload(config: RunpodLaunchConfig):
++    return {
++        "name": config.network_volume_name,
++        "size": config.network_volume_size_gb,
++        "dataCenterId": config.data_center_id,
++    }
++
++
++def _find_volume_by_name(volumes: list[dict[str, Any]], name: str, data_center_id: str):
++    for volume in volumes:
++        if volume.get("name") == name and volume.get("dataCenterId") == data_center_id:
++            return volume
++    return None
++
++
++def _build_launch_config(args, api_env: dict[str, str]):
++    hf_token = api_env.get(args.hf_token_env) or os.environ.get(args.hf_token_env)
++    volume_name = args.network_volume_name or f"{args.name}-workspace"
++    return RunpodLaunchConfig(
++        name=args.name,
++        gpu_type_id=args.gpu_type_id,
++        data_center_id=args.data_center_id,
++        network_volume_name=volume_name,
++        network_volume_size_gb=args.network_volume_size_gb,
++        image_name=args.image_name,
++        repo_url=args.repo_url,
++        repo_branch=args.repo_branch,
++        cloneval_repo_url=args.cloneval_repo_url,
++        cloneval_repo_branch=args.cloneval_repo_branch,
++        workspace_mount=args.workspace_mount,
++        repo_dir_name=args.repo_dir_name,
++        container_disk_gb=args.container_disk_gb,
++        vcpu_count=args.vcpu_count,
++        memory_in_gb=args.memory_in_gb,
++        support_public_ip=not args.disable_public_ip,
++        expose_jupyter=args.expose_jupyter,
++        hf_token=hf_token,
++    )
++
++
++def _print_json(payload):
++    print(json.dumps(payload, indent=2, sort_keys=True))
++
++
++def _common_parser(parser: argparse.ArgumentParser):
++    parser.add_argument("--env_file", type=str, default=".env")
++    parser.add_argument("--runpod_key_env", type=str, default="RUNPOD_API_KEY")
++    parser.add_argument("--hf_token_env", type=str, default="HF_TOKEN")
++
++
++def _add_launch_args(parser: argparse.ArgumentParser):
++    parser.add_argument("--name", type=str, default="mnemosvoice-stage1")
++    parser.add_argument("--gpu_type_id", type=str, default="NVIDIA A100 80GB PCIe")
++    parser.add_argument("--data_center_id", type=str, default="US-KS-2")
++    parser.add_argument("--network_volume_name", type=str, default=None)
++    parser.add_argument("--network_volume_size_gb", type=int, default=2048)
++    parser.add_argument(
++        "--image_name",
++        type=str,
++        default="runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
++    )
++    parser.add_argument("--repo_url", type=str, required=True)
++    parser.add_argument("--repo_branch", type=str, default="master")
++    parser.add_argument(
++        "--cloneval_repo_url",
++        type=str,
++        default="https://github.com/amu-cai/cloneval.git",
++    )
++    parser.add_argument("--cloneval_repo_branch", type=str, default="main")
++    parser.add_argument("--workspace_mount", type=str, default="/workspace")
++    parser.add_argument("--repo_dir_name", type=str, default="OmniVoice")
++    parser.add_argument("--container_disk_gb", type=int, default=50)
++    parser.add_argument("--vcpu_count", type=int, default=16)
++    parser.add_argument("--memory_in_gb", type=int, default=125)
++    parser.add_argument("--disable_public_ip", action="store_true")
++    parser.add_argument("--expose_jupyter", action="store_true")
++    parser.add_argument("--dry_run", action="store_true")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    subparsers = parser.add_subparsers(dest="command", required=True)
++
++    create_parser = subparsers.add_parser("create", help="Create a Runpod training pod.")
++    _common_parser(create_parser)
++    _add_launch_args(create_parser)
++
++    status_parser = subparsers.add_parser("status", help="Inspect a pod or list pods by name.")
++    _common_parser(status_parser)
++    status_parser.add_argument("--pod_id", type=str, default=None)
++    status_parser.add_argument("--name", type=str, default=None)
++
++    start_parser = subparsers.add_parser("start", help="Start an existing pod.")
++    _common_parser(start_parser)
++    start_parser.add_argument("--pod_id", type=str, required=True)
++
++    delete_parser = subparsers.add_parser("terminate", help="Terminate a pod.")
++    _common_parser(delete_parser)
++    delete_parser.add_argument("--pod_id", type=str, required=True)
++
++    args = parser.parse_args()
++    env_values = load_env_file(args.env_file) if getattr(args, "env_file", None) else {}
++
++    if args.command == "create":
++        config = _build_launch_config(args, env_values)
++        volume_payload = _network_volume_payload(config)
++        pod_payload = _pod_payload(config, network_volume_id="<create-me>")
++
++        if args.dry_run:
++            _print_json(
++                {
++                    "launch_config": asdict(config),
++                    "network_volume_payload": volume_payload,
++                    "pod_payload": pod_payload,
++                }
++            )
++            return
++
++    api_key = env_values.get(args.runpod_key_env) or os.environ.get(args.runpod_key_env)
++    if not api_key:
++        raise RuntimeError(
++            f"Missing {args.runpod_key_env}. Provide it in {args.env_file} or the environment."
++        )
++
++    client = RunpodClient(api_key=api_key)
++
++    if args.command == "create":
++        existing_volume = _find_volume_by_name(
++            client.list_network_volumes(),
++            name=config.network_volume_name,
++            data_center_id=config.data_center_id,
++        )
++        if existing_volume:
++            network_volume = existing_volume
++        else:
++            network_volume = client.create_network_volume(volume_payload)
++
++        pod_payload = _pod_payload(config, network_volume_id=network_volume["id"])
++
++        created = client.create_pod(pod_payload)
++        _print_json(
++            {
++                "network_volume": network_volume,
++                "pod": created,
++            }
++        )
++        return
++
++    if args.command == "status":
++        if args.pod_id:
++            _print_json(client.get_pod(args.pod_id))
++        else:
++            _print_json({"pods": client.list_pods(name=args.name)})
++        return
++
++    if args.command == "start":
++        _print_json(client.start_pod(args.pod_id))
++        return
++
++    if args.command == "terminate":
++        _print_json(client.delete_pod(args.pod_id))
++        return
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/omnivoice/scripts/benchmark_compare.py b/omnivoice/scripts/benchmark_compare.py
 new file mode 100644
 index 0000000..0bf3604
@@ -1982,17 +5317,495 @@ index 0000000..0bf3604
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/omnivoice/scripts/build_hf_manifests.py b/omnivoice/scripts/build_hf_manifests.py
+new file mode 100644
+index 0000000..031da9e
+--- /dev/null
++++ b/omnivoice/scripts/build_hf_manifests.py
+@@ -0,0 +1,116 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++
++"""Build staged raw JSONL manifests for OmniVoice / MnemosVoice training."""
++
++from __future__ import annotations
++
++import argparse
++import logging
++import os
++from pathlib import Path
++
++from omnivoice.data.manifest_builder import (
++    build_hf_manifests,
++    stage_recipes,
++    write_manifest_plan,
++)
++from omnivoice.utils.env import load_env_file
++
++
++def get_parser():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--stage",
++        type=str,
++        default="stage1",
++        choices=["stage1", "stage2", "all"],
++        help="Which staged corpus recipe to materialize.",
++    )
++    parser.add_argument(
++        "--profile",
++        type=str,
++        default="smoke",
++        choices=["smoke", "core"],
++        help="Smoke keeps tiny subsets; core uses the planned stage-1 caps.",
++    )
++    parser.add_argument(
++        "--manifest_root",
++        type=str,
++        required=True,
++        help="Directory for output JSONL manifests and summary sidecars.",
++    )
++    parser.add_argument(
++        "--audio_root",
++        type=str,
++        required=True,
++        help="Directory where streamed audio files are materialized.",
++    )
++    parser.add_argument(
++        "--env_file",
++        type=str,
++        default=".env",
++        help="Optional .env file that may contain HF_TOKEN.",
++    )
++    parser.add_argument(
++        "--hf_token_env",
++        type=str,
++        default="HF_TOKEN",
++        help="Environment variable name used to read the Hugging Face token.",
++    )
++    parser.add_argument(
++        "--skip_existing",
++        action="store_true",
++        help="Skip writing rows when the output JSONL already exists.",
++    )
++    parser.add_argument(
++        "--write_recipe_plan",
++        action="store_true",
++        help="Write a JSON dump of the active recipe list next to the manifests.",
++    )
++    return parser
++
++
++def main():
++    args = get_parser().parse_args()
++    logging.basicConfig(
++        level=logging.INFO,
++        format="%(asctime)s %(levelname)s %(message)s",
++    )
++
++    if args.env_file:
++        load_env_file(args.env_file)
++
++    manifest_root = Path(args.manifest_root)
++    audio_root = Path(args.audio_root)
++    manifest_root.mkdir(parents=True, exist_ok=True)
++    audio_root.mkdir(parents=True, exist_ok=True)
++
++    recipes = stage_recipes(stage=args.stage, profile=args.profile)
++    hf_token = os.environ.get(args.hf_token_env)
++
++    if args.write_recipe_plan:
++        write_manifest_plan(
++            recipes,
++            str(manifest_root / f"{args.stage}_{args.profile}_recipes.json"),
++        )
++
++    built = build_hf_manifests(
++        recipes=recipes,
++        manifest_root=str(manifest_root),
++        audio_root=str(audio_root),
++        hf_token=hf_token,
++        skip_existing=args.skip_existing,
++    )
++
++    logging.info("Built %s manifest files under %s", len(built), manifest_root)
++    for path in built:
++        logging.info("  %s", path)
++
++
++if __name__ == "__main__":
++    main()
++
+diff --git a/omnivoice/scripts/orchestrate_tokenization.py b/omnivoice/scripts/orchestrate_tokenization.py
+new file mode 100644
+index 0000000..c6a9337
+--- /dev/null
++++ b/omnivoice/scripts/orchestrate_tokenization.py
+@@ -0,0 +1,245 @@
++#!/usr/bin/env python3
++# Copyright    2026  Xiaomi Corp.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++
++"""Tokenize staged raw manifests and build a multilingual data config."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import logging
++import shutil
++import subprocess
++import sys
++from collections import defaultdict
++from pathlib import Path
++
++
++def get_parser():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument(
++        "--manifest_root",
++        type=str,
++        required=True,
++        help="Directory containing raw JSONL manifests and *.summary.json sidecars.",
++    )
++    parser.add_argument(
++        "--token_root",
++        type=str,
++        required=True,
++        help="Directory where tokenized WebDataset shards should be written.",
++    )
++    parser.add_argument(
++        "--data_config_out",
++        type=str,
++        required=True,
++        help="Path to write the generated multilingual data config JSON.",
++    )
++    parser.add_argument(
++        "--python_bin",
++        type=str,
++        default=sys.executable,
++        help="Python executable used to call omnivoice.scripts.extract_audio_tokens.",
++    )
++    parser.add_argument(
++        "--tokenizer_path",
++        type=str,
++        default="eustlb/higgs-audio-v2-tokenizer",
++        help="Higgs audio tokenizer repo or local path.",
++    )
++    parser.add_argument(
++        "--nj_per_gpu",
++        type=int,
++        default=3,
++        help="Worker processes per GPU for token extraction.",
++    )
++    parser.add_argument(
++        "--loader_workers",
++        type=int,
++        default=24,
++        help="DataLoader workers used by the tokenization script.",
++    )
++    parser.add_argument(
++        "--profile",
++        type=str,
++        default="smoke",
++        choices=["smoke", "core"],
++        help="Controls repeat weighting in the generated data config.",
++    )
++    parser.add_argument(
++        "--dry_run",
++        action="store_true",
++        help="Print tokenization commands without executing them.",
++    )
++    parser.add_argument(
++        "--skip_existing",
++        action="store_true",
++        help="Skip manifests whose token output directory already has data.lst.",
++    )
++    return parser
++
++
++def _discover_manifests(manifest_root: Path):
++    manifests = []
++    for manifest_path in sorted(manifest_root.glob("*.jsonl")):
++        if manifest_path.name.endswith(".example.jsonl"):
++            continue
++        summary_path = manifest_path.with_suffix(".summary.json")
++        if not summary_path.exists():
++            continue
++        manifests.append((manifest_path, summary_path))
++    return manifests
++
++
++def _read_json(path: Path):
++    return json.loads(path.read_text(encoding="utf-8"))
++
++
++def _extract_command(
++    python_bin: str,
++    manifest_path: Path,
++    token_dir: Path,
++    tokenizer_path: str,
++    nj_per_gpu: int,
++    loader_workers: int,
++):
++    return [
++        python_bin,
++        "-m",
++        "omnivoice.scripts.extract_audio_tokens",
++        "--input_jsonl",
++        str(manifest_path),
++        "--tar_output_pattern",
++        str(token_dir / "audios" / "shard-%06d.tar"),
++        "--jsonl_output_pattern",
++        str(token_dir / "txts" / "shard-%06d.jsonl"),
++        "--tokenizer_path",
++        tokenizer_path,
++        "--nj_per_gpu",
++        str(nj_per_gpu),
++        "--loader_workers",
++        str(loader_workers),
++        "--shuffle",
++        "True",
++    ]
++
++
++def _seconds_from_data_lst(path: Path):
++    total = 0.0
++    for line in path.read_text(encoding="utf-8").splitlines():
++        if not line.strip():
++            continue
++        parts = line.split()
++        if len(parts) != 4:
++            continue
++        total += float(parts[3])
++    return total
++
++
++def _repeat_from_hours(hours: float, base_repeat: int, profile: str):
++    if profile == "smoke":
++        return 1
++    if hours <= 10.0:
++        return max(base_repeat, 8)
++    if hours <= 25.0:
++        return max(base_repeat, 4)
++    if hours <= 50.0:
++        return max(base_repeat, 2)
++    return max(base_repeat, 1)
++
++
++def _build_data_config(token_root: Path, data_config_out: Path, profile: str):
++    grouped: dict[str, dict[tuple[str, str, int], list[str]]] = {
++        "train": defaultdict(list),
++        "dev": defaultdict(list),
++    }
++
++    for token_dir in sorted(token_root.iterdir()):
++        if not token_dir.is_dir():
++            continue
++        manifest_path = token_dir / "data.lst"
++        summary_path = token_dir / "manifest.summary.json"
++        if not manifest_path.exists() or not summary_path.exists():
++            continue
++
++        summary = _read_json(summary_path)
++        role = summary["split_role"]
++        split_key = "dev" if role == "dev" else "train"
++        hours = _seconds_from_data_lst(manifest_path) / 3600.0
++        base_repeat = int(summary.get("repeat_hint", 1))
++        repeat = (
++            1
++            if split_key == "dev"
++            else _repeat_from_hours(
++                hours=hours,
++                base_repeat=base_repeat,
++                profile=profile,
++            )
++        )
++        dataset_name = str(summary["dataset_name"])
++        language_id = str(summary["language_id"])
++        grouped[split_key][(dataset_name, language_id, repeat)].append(str(manifest_path))
++
++    payload = {"train": [], "dev": []}
++    for split_key in ("train", "dev"):
++        for (dataset_name, language_id, repeat), manifest_paths in sorted(grouped[split_key].items()):
++            payload[split_key].append(
++                {
++                    "dataset_name": dataset_name,
++                    "language_id": language_id,
++                    "manifest_path": manifest_paths,
++                    "repeat": repeat,
++                }
++            )
++
++    data_config_out.parent.mkdir(parents=True, exist_ok=True)
++    data_config_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
++
++
++def main():
++    args = get_parser().parse_args()
++    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
++
++    manifest_root = Path(args.manifest_root)
++    token_root = Path(args.token_root)
++    token_root.mkdir(parents=True, exist_ok=True)
++
++    manifests = _discover_manifests(manifest_root)
++    if not manifests:
++        raise FileNotFoundError(f"No manifests with summary sidecars found in {manifest_root}")
++
++    for manifest_path, summary_path in manifests:
++        token_dir = token_root / manifest_path.stem
++        data_lst_path = token_dir / "data.lst"
++        if args.skip_existing and data_lst_path.exists():
++            logging.info("Skipping existing token output for %s", manifest_path.name)
++            continue
++
++        cmd = _extract_command(
++            python_bin=args.python_bin,
++            manifest_path=manifest_path,
++            token_dir=token_dir,
++            tokenizer_path=args.tokenizer_path,
++            nj_per_gpu=args.nj_per_gpu,
++            loader_workers=args.loader_workers,
++        )
++        logging.info("Tokenizing %s -> %s", manifest_path.name, token_dir)
++        logging.info("  %s", " ".join(cmd))
++        if not args.dry_run:
++            subprocess.run(cmd, check=True)
++            shutil.copy2(summary_path, token_dir / "manifest.summary.json")
++
++    if not args.dry_run:
++        _build_data_config(
++            token_root=token_root,
++            data_config_out=Path(args.data_config_out),
++            profile=args.profile,
++        )
++        logging.info("Wrote data config to %s", args.data_config_out)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/omnivoice/scripts/render_cloneval_report.py b/omnivoice/scripts/render_cloneval_report.py
+new file mode 100644
+index 0000000..ab65e47
+--- /dev/null
++++ b/omnivoice/scripts/render_cloneval_report.py
+@@ -0,0 +1,95 @@
++#!/usr/bin/env python3
++
++"""Render baseline / proposed / ablation CloneEval results into markdown."""
++
++from __future__ import annotations
++
++import argparse
++import csv
++from pathlib import Path
++
++
++def _read_aggregated(path: Path):
++    with open(path, "r", encoding="utf-8") as f:
++        reader = csv.DictReader(f)
++        return list(reader)
++
++
++def _read_runtime_summary(path: Path):
++    summary_path = path.with_suffix(".summary.json")
++    if not summary_path.exists():
++        return {}
++    import json
++
++    return json.loads(summary_path.read_text(encoding="utf-8"))
++
++
++def _mean_metric(rows, key):
++    values = []
++    for row in rows:
++        value = row.get(key)
++        if value in (None, ""):
++            continue
++        values.append(float(value))
++    if not values:
++        return "n/a"
++    return f"{sum(values) / len(values):.4f}"
++
++
++def _row_for(label: str, metrics_dir: Path):
++    rows = _read_aggregated(metrics_dir / "aggregated_results.csv")
++    runtime = _read_runtime_summary(metrics_dir / "runtime_metrics.csv")
++    return {
++        "name": label,
++        "speaker_similarity": _mean_metric(rows, "speaker_similarity"),
++        "intelligibility": _mean_metric(rows, "intelligibility"),
++        "naturalness": _mean_metric(rows, "naturalness"),
++        "emotion_transfer": _mean_metric(rows, "emotion_transfer"),
++        "mean_latency_s": f"{runtime.get('mean_latency_s', 'n/a')}",
++        "mean_rtf": f"{runtime.get('mean_real_time_factor', 'n/a')}",
++    }
++
++
++def get_parser():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--baseline_dir", type=str, required=True)
++    parser.add_argument("--mnemosvoice_dir", type=str, required=True)
++    parser.add_argument(
++        "--ablation",
++        action="append",
++        default=[],
++        help="Additional report rows in NAME=METRICS_DIR format.",
++    )
++    parser.add_argument("--output", type=str, required=True)
++    return parser
++
++
++def main():
++    args = get_parser().parse_args()
++    rows = [
++        _row_for("OmniVoice baseline", Path(args.baseline_dir)),
++        _row_for("MnemosVoice", Path(args.mnemosvoice_dir)),
++    ]
++    for item in args.ablation:
++        label, metrics_dir = item.split("=", 1)
++        rows.append(_row_for(label, Path(metrics_dir)))
++
++    output_lines = [
++        "| Model | Speaker Similarity | Intelligibility | Naturalness | Emotion Transfer | Mean Latency (s) | Mean RTF |",
++        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
++    ]
++    for row in rows:
++        output_lines.append(
++            "| {name} | {speaker_similarity} | {intelligibility} | {naturalness} | {emotion_transfer} | {mean_latency_s} | {mean_rtf} |".format(
++                **row
++            )
++        )
++
++    output_path = Path(args.output)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    output_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
++
++
++if __name__ == "__main__":
++    main()
++
 diff --git a/omnivoice/training/builder.py b/omnivoice/training/builder.py
-index fa1867b..6e91bab 100644
+index 28f3c71..6e91bab 100644
 --- a/omnivoice/training/builder.py
 +++ b/omnivoice/training/builder.py
-@@ -99,9 +99,9 @@ def build_model_and_tokenizer(
-             speaker_loss_weight=config.speaker_loss_weight,
-             memory_conditioning_num_heads=config.memory_conditioning_num_heads,
-             memory_conditioning_dropout=config.memory_conditioning_dropout,
--            mnemosvoice_use_speaker_memory=config.mnemosvoice_use_speaker_memory,
--            mnemosvoice_use_prosody_planner=config.mnemosvoice_use_prosody_planner,
--            mnemosvoice_use_speaker_consistency_loss=config.mnemosvoice_use_speaker_consistency_loss,
+@@ -92,6 +92,16 @@ def build_model_and_tokenizer(
+             audio_mask_id=config.audio_mask_id,
+             num_audio_codebook=config.num_audio_codebook,
+             audio_codebook_weights=config.audio_codebook_weights,
++            architecture_variant=config.architecture_variant,
++            speaker_memory_num_tokens=config.speaker_memory_num_tokens,
++            planner_stride=config.planner_stride,
++            planner_loss_weight=config.planner_loss_weight,
++            speaker_loss_weight=config.speaker_loss_weight,
++            memory_conditioning_num_heads=config.memory_conditioning_num_heads,
++            memory_conditioning_dropout=config.memory_conditioning_dropout,
 +            aoede_use_speaker_memory=config.aoede_use_speaker_memory,
 +            aoede_use_prosody_planner=config.aoede_use_prosody_planner,
 +            aoede_use_speaker_consistency_loss=config.aoede_use_speaker_consistency_loss,
@@ -2000,23 +5813,27 @@ index fa1867b..6e91bab 100644
          )
  
 diff --git a/omnivoice/training/config.py b/omnivoice/training/config.py
-index d2014c0..06ff057 100644
+index ecae725..06ff057 100644
 --- a/omnivoice/training/config.py
 +++ b/omnivoice/training/config.py
-@@ -45,9 +45,9 @@ class TrainingConfig:
-     speaker_loss_weight: float = 0.05
-     memory_conditioning_num_heads: int = 8
-     memory_conditioning_dropout: float = 0.1
--    mnemosvoice_use_speaker_memory: bool = True
--    mnemosvoice_use_prosody_planner: bool = True
--    mnemosvoice_use_speaker_consistency_loss: bool = True
+@@ -38,6 +38,16 @@ class TrainingConfig:
+     audio_vocab_size: int = 1025  # valid vocab size + 1 (mask token)
+     audio_mask_id: int = 1024  # 1024 is the 1025-th token
+     num_audio_codebook: int = 8
++    architecture_variant: str = "omnivoice"
++    speaker_memory_num_tokens: int = 8
++    planner_stride: int = 4
++    planner_loss_weight: float = 0.2
++    speaker_loss_weight: float = 0.05
++    memory_conditioning_num_heads: int = 8
++    memory_conditioning_dropout: float = 0.1
 +    aoede_use_speaker_memory: bool = True
 +    aoede_use_prosody_planner: bool = True
 +    aoede_use_speaker_consistency_loss: bool = True
  
      # Model Training Specific
      audio_codebook_weights: List[float | int] = field(
-@@ -97,6 +97,16 @@ class TrainingConfig:
+@@ -87,6 +97,16 @@ class TrainingConfig:
      def from_json(cls, json_path: str):
          with open(json_path, "r") as f:
              cfg_dict = json.load(f)
@@ -2033,43 +5850,243 @@ index d2014c0..06ff057 100644
          valid_keys = cls.__annotations__.keys()
          filtered_dict = {k: v for k, v in cfg_dict.items() if k in valid_keys}
          instance = cls(**filtered_dict)
+diff --git a/omnivoice/utils/env.py b/omnivoice/utils/env.py
+new file mode 100644
+index 0000000..4291811
+--- /dev/null
++++ b/omnivoice/utils/env.py
+@@ -0,0 +1,34 @@
++#!/usr/bin/env python3
++
++"""Small helpers for reading .env files without extra dependencies."""
++
++from __future__ import annotations
++
++import os
++from pathlib import Path
++
++
++def parse_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
++    values: dict[str, str] = {}
++    env_path = Path(path)
++    if not env_path.exists():
++        return values
++
++    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
++        line = raw_line.strip()
++        if not line or line.startswith("#") or "=" not in line:
++            continue
++        key, value = line.split("=", 1)
++        key = key.strip()
++        value = value.strip().strip("'").strip('"')
++        if key:
++            values[key] = value
++    return values
++
++
++def load_env_file(path: str | os.PathLike[str], override: bool = False) -> dict[str, str]:
++    values = parse_env_file(path)
++    for key, value in values.items():
++        if override or key not in os.environ:
++            os.environ[key] = value
++    return values
 diff --git a/pyproject.toml b/pyproject.toml
-index 9dae88e..6fa71d8 100644
+index c0f0c32..6fa71d8 100644
 --- a/pyproject.toml
 +++ b/pyproject.toml
-@@ -65,6 +65,7 @@ omnivoice-infer = "omnivoice.cli.infer:main"
+@@ -54,10 +54,22 @@ eval = [
+     "unidecode",            # Unicode normalization
+ ]
+ 
++research = [
++    "datasets>=3.0.0",
++    "huggingface_hub>=0.30.0",
++    "requests>=2.31.0",
++]
++
+ [project.scripts]
+ omnivoice-infer = "omnivoice.cli.infer:main"
  omnivoice-infer-batch = "omnivoice.cli.infer_batch:main"
  omnivoice-demo = "omnivoice.cli.demo:main"
- omnivoice-cloneval = "omnivoice.eval.cloneval_benchmark:main"
++omnivoice-cloneval = "omnivoice.eval.cloneval_benchmark:main"
 +omnivoice-benchmark-compare = "omnivoice.scripts.benchmark_compare:main"
- omnivoice-build-hf-manifests = "omnivoice.scripts.build_hf_manifests:main"
- omnivoice-orchestrate-tokenization = "omnivoice.scripts.orchestrate_tokenization:main"
- omnivoice-render-cloneval = "omnivoice.scripts.render_cloneval_report:main"
-diff --git a/tests/test_mnemosvoice.py b/tests/test_aoede.py
-similarity index 98%
-rename from tests/test_mnemosvoice.py
-rename to tests/test_aoede.py
-index 879ec40..8e66124 100644
---- a/tests/test_mnemosvoice.py
++omnivoice-build-hf-manifests = "omnivoice.scripts.build_hf_manifests:main"
++omnivoice-orchestrate-tokenization = "omnivoice.scripts.orchestrate_tokenization:main"
++omnivoice-render-cloneval = "omnivoice.scripts.render_cloneval_report:main"
++omnivoice-runpod = "omnivoice.runpod.launcher:main"
+ 
+ [project.urls]
+ Homepage = "https://github.com/k2-fsa/OmniVoice"
+diff --git a/tests/test_aoede.py b/tests/test_aoede.py
+new file mode 100644
+index 0000000..8e66124
+--- /dev/null
 +++ b/tests/test_aoede.py
-@@ -63,7 +63,7 @@ def build_model():
-         audio_mask_id=16,
-         num_audio_codebook=2,
-         audio_codebook_weights=[1, 1],
--        architecture_variant="mnemosvoice",
+@@ -0,0 +1,164 @@
++import types
++
++import torch
++from transformers import BertConfig
++
++from omnivoice.data.collator import PackingDataCollator
++from omnivoice.models.omnivoice import OmniVoice, OmniVoiceConfig
++
++
++class DummyLLM(torch.nn.Module):
++    def __init__(self, vocab_size=64, hidden_size=32):
++        super().__init__()
++        self.config = types.SimpleNamespace(
++            hidden_size=hidden_size,
++            vocab_size=vocab_size,
++        )
++        self.embed = torch.nn.Embedding(vocab_size, hidden_size)
++        self.net = torch.nn.Sequential(
++            torch.nn.Linear(hidden_size, hidden_size),
++            torch.nn.Tanh(),
++            torch.nn.Linear(hidden_size, hidden_size),
++        )
++
++    def get_input_embeddings(self):
++        return self.embed
++
++    def set_input_embeddings(self, value):
++        self.embed = value
++
++    def resize_token_embeddings(self, new_size):
++        self.embed = torch.nn.Embedding(new_size, self.config.hidden_size)
++
++    def forward(
++        self,
++        inputs_embeds,
++        attention_mask=None,
++        return_dict=True,
++        position_ids=None,
++    ):
++        return (self.net(inputs_embeds),)
++
++
++class DummyTokenizer:
++    pad_token_id = 0
++
++    def __call__(self, text, return_tensors=None, add_special_tokens=True):
++        ids = [((ord(ch) % 13) + 1) for ch in text] or [1]
++        if return_tensors == "pt":
++            return types.SimpleNamespace(input_ids=torch.tensor([ids], dtype=torch.long))
++        return types.SimpleNamespace(input_ids=ids)
++
++
++def build_model():
++    llm_config = BertConfig(
++        vocab_size=64,
++        hidden_size=32,
++        num_hidden_layers=1,
++        num_attention_heads=4,
++        intermediate_size=64,
++    )
++    config = OmniVoiceConfig(
++        audio_vocab_size=17,
++        audio_mask_id=16,
++        num_audio_codebook=2,
++        audio_codebook_weights=[1, 1],
 +        architecture_variant="aoede",
-         speaker_memory_num_tokens=4,
-         planner_stride=2,
-         planner_loss_weight=0.2,
-@@ -77,7 +77,7 @@ def build_model():
-     return model
- 
- 
--def test_mnemosvoice_forward_reports_aux_losses():
++        speaker_memory_num_tokens=4,
++        planner_stride=2,
++        planner_loss_weight=0.2,
++        speaker_loss_weight=0.1,
++        memory_conditioning_num_heads=4,
++        llm_config=llm_config,
++    )
++    model = OmniVoice(config=config, llm=DummyLLM(vocab_size=64, hidden_size=32))
++    model.text_tokenizer = DummyTokenizer()
++    model.to("cpu")
++    return model
++
++
 +def test_aoede_forward_reports_aux_losses():
-     model = build_model()
- 
-     input_ids = torch.tensor(
++    model = build_model()
++
++    input_ids = torch.tensor(
++        [
++            [
++                [3, 4, 5, 6, 7, 16, 9, 16, 11],
++                [3, 4, 2, 3, 4, 16, 5, 16, 6],
++            ]
++        ],
++        dtype=torch.long,
++    )
++    audio_mask = torch.tensor([[False, False, True, True, True, True, True, True, True]])
++    prompt_mask = torch.tensor([[False, False, True, True, True, False, False, False, False]])
++    target_audio_mask = torch.tensor([[False, False, False, False, False, True, True, True, True]])
++    labels = torch.full_like(input_ids, -100)
++    labels[:, :, 5] = torch.tensor([[8, 4]])
++    labels[:, :, 7] = torch.tensor([[10, 7]])
++
++    outputs = model(
++        input_ids=input_ids,
++        audio_mask=audio_mask,
++        prompt_mask=prompt_mask,
++        target_audio_mask=target_audio_mask,
++        labels=labels,
++    )
++
++    assert outputs.logits.shape == (1, 2, 9, 17)
++    assert outputs.loss is not None
++    assert torch.isfinite(outputs.loss)
++    assert outputs.plan_loss is not None
++    assert torch.isfinite(outputs.plan_loss)
++    assert outputs.speaker_loss is not None
++    assert torch.isfinite(outputs.speaker_loss)
++
++
++def test_prepare_inference_inputs_marks_prompt_and_target_spans():
++    model = build_model()
++    ref_audio_tokens = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
++
++    prepared = model._prepare_inference_inputs(
++        text="hello",
++        num_target_tokens=4,
++        ref_text="greetings",
++        ref_audio_tokens=ref_audio_tokens,
++        lang="en",
++        instruct="bright",
++        denoise=True,
++    )
++
++    assert prepared["input_ids"].shape[1] == 2
++    assert prepared["prompt_mask"].sum().item() == 3
++    assert prepared["target_audio_mask"].sum().item() == 4
++    assert prepared["audio_mask"].sum().item() == 7
++
++
++def test_packing_collator_preserves_prompt_and_target_masks():
++    processor = types.SimpleNamespace(text_tokenizer=types.SimpleNamespace(pad_token_id=0))
++    collator = PackingDataCollator(processor, batch_tokens=10)
++    samples = [
++        {
++            "input_ids": torch.ones(2, 4, dtype=torch.long),
++            "labels": torch.full((2, 4), -100, dtype=torch.long),
++            "audio_mask": torch.tensor([False, True, True, True]),
++            "prompt_mask": torch.tensor([False, True, False, False]),
++            "target_audio_mask": torch.tensor([False, False, True, True]),
++            "length": 4,
++        },
++        {
++            "input_ids": torch.ones(2, 3, dtype=torch.long) * 2,
++            "labels": torch.full((2, 3), -100, dtype=torch.long),
++            "audio_mask": torch.tensor([False, True, True]),
++            "prompt_mask": torch.tensor([False, False, True]),
++            "target_audio_mask": torch.tensor([False, True, False]),
++            "length": 3,
++        },
++    ]
++
++    batch = collator(samples)
++    assert batch["prompt_mask"].shape == (1, 10)
++    assert batch["target_audio_mask"].shape == (1, 10)
++    assert batch["prompt_mask"][0, 1].item() is True
++    assert batch["prompt_mask"][0, 6].item() is True
++    assert batch["target_audio_mask"][0, 2].item() is True
++    assert batch["target_audio_mask"][0, 5].item() is True
 diff --git a/tests/test_benchmark_summary.py b/tests/test_benchmark_summary.py
 new file mode 100644
 index 0000000..b794376
@@ -2193,3 +6210,272 @@ index 0000000..b794376
 +
 +    assert args.eval_data_dir == "download/tts_eval_datasets"
 +    assert args.eval_model_dir == "download/tts_eval_models"
+diff --git a/tests/test_manifest_builder.py b/tests/test_manifest_builder.py
+new file mode 100644
+index 0000000..b73f44a
+--- /dev/null
++++ b/tests/test_manifest_builder.py
+@@ -0,0 +1,146 @@
++import json
++from pathlib import Path
++
++import numpy as np
++
++from omnivoice.data import manifest_builder as mb
++
++
++def _audio_row(sample_id, text, language, duration_s=2.0, speaker_id="spk-1"):
++    sr = 16_000
++    num_samples = int(sr * duration_s)
++    return {
++        "id": sample_id,
++        "text": text,
++        "language": language,
++        "speaker_id": speaker_id,
++        "audio": {
++            "array": np.zeros(num_samples, dtype=np.float32),
++            "sampling_rate": sr,
++        },
++    }
++
++
++def test_stage1_recipes_cover_core_datasets():
++    recipes = mb.stage_recipes("stage1", "smoke")
++    names = {recipe.name for recipe in recipes}
++    assert {"emilia", "peoples_speech", "mls", "waxal"} <= names
++
++
++def test_waxal_language_map_is_complete_and_deterministic():
++    mapping = mb.list_supported_waxal_codes()
++    assert mapping["amh"] == "am"
++    assert mapping["yor"] == "yo"
++    assert mapping["ach"] is None
++    assert mapping["swa"] == "sw"
++
++
++def test_fixed_hf_recipe_materializes_manifest_and_summary(tmp_path, monkeypatch):
++    recipe = mb.CorpusRecipe(
++        name="peoples_speech",
++        stage="stage1",
++        kind="hf_audio",
++        dataset_id="MLCommons/peoples_speech",
++        config_names=("clean",),
++        split_name="train",
++        role="train",
++        output_stem="peoples_speech_clean_train",
++        language_id="en",
++        max_records=4,
++    )
++
++    monkeypatch.setattr(
++        mb,
++        "_iter_hf_rows",
++        lambda dataset_id, config_name, split_name, hf_token, streaming=True: [
++            _audio_row("utt-001", "hello world", "en"),
++            _audio_row("utt-001", "duplicate id", "en"),
++            _audio_row("utt-002", "second sample", "en"),
++        ],
++    )
++
++    manifest_root = tmp_path / "manifests"
++    audio_root = tmp_path / "audio"
++    built = mb.build_hf_manifests([recipe], str(manifest_root), str(audio_root))
++
++    manifest_path = manifest_root / "peoples_speech_clean_train.jsonl"
++    summary_path = manifest_root / "peoples_speech_clean_train.summary.json"
++    assert manifest_path in built
++    assert manifest_path.exists()
++    assert summary_path.exists()
++
++    rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
++    assert len(rows) == 2
++    assert rows[0]["language_id"] == "en"
++    summary = json.loads(summary_path.read_text(encoding="utf-8"))
++    assert summary["num_samples"] == 2
++    assert summary["dataset_name"] == "peoples_speech"
++
++
++def test_mixed_fixed_recipe_creates_train_and_dev_outputs(tmp_path, monkeypatch):
++    recipe = mb.CorpusRecipe(
++        name="peoples_speech",
++        stage="stage1",
++        kind="hf_audio",
++        dataset_id="MLCommons/peoples_speech",
++        config_names=("clean",),
++        split_name="train",
++        role="mixed",
++        output_stem="peoples_speech_clean",
++        language_id="en",
++        max_records=8,
++        hash_dev_ratio=0.0,
++        min_dev_examples_per_language=1,
++    )
++
++    monkeypatch.setattr(
++        mb,
++        "_iter_hf_rows",
++        lambda dataset_id, config_name, split_name, hf_token, streaming=True: [
++            _audio_row("utt-101", "first sample", "en"),
++            _audio_row("utt-102", "second sample", "en"),
++        ],
++    )
++
++    manifest_root = tmp_path / "manifests"
++    audio_root = tmp_path / "audio"
++    mb.build_hf_manifests([recipe], str(manifest_root), str(audio_root))
++
++    assert (manifest_root / "peoples_speech_clean_dev.jsonl").exists()
++    assert (manifest_root / "peoples_speech_clean_train.jsonl").exists()
++
++
++def test_emilia_recipe_creates_train_and_dev_manifests(tmp_path, monkeypatch):
++    recipe = mb.CorpusRecipe(
++        name="emilia",
++        stage="stage1",
++        kind="hf_emilia",
++        dataset_id="amphion/Emilia-Dataset",
++        split_name="train",
++        role="mixed",
++        output_stem="emilia",
++        max_hours_total=10.0,
++        max_hours_per_language=10.0,
++        max_records=8,
++        hash_dev_ratio=0.0,
++        min_dev_examples_per_language=1,
++    )
++
++    monkeypatch.setattr(
++        mb,
++        "_iter_hf_rows",
++        lambda dataset_id, config_name, split_name, hf_token, streaming=True: [
++            {"json": {"id": "de-001", "text": "guten tag", "language": "de"}, "audio": {"array": np.zeros(32000), "sampling_rate": 16000}},
++            {"json": {"id": "de-002", "text": "zweite probe", "language": "de"}, "audio": {"array": np.zeros(32000), "sampling_rate": 16000}},
++            {"json": {"id": "en-001", "text": "hello there", "language": "en"}, "audio": {"array": np.zeros(32000), "sampling_rate": 16000}},
++        ],
++    )
++
++    manifest_root = tmp_path / "manifests"
++    audio_root = tmp_path / "audio"
++    mb.build_hf_manifests([recipe], str(manifest_root), str(audio_root))
++
++    assert (manifest_root / "emilia_de_dev.jsonl").exists()
++    assert (manifest_root / "emilia_de_train.jsonl").exists()
++    assert (manifest_root / "emilia_en_dev.jsonl").exists()
++    assert not (manifest_root / "emilia_en_train.jsonl").exists()
+diff --git a/tests/test_orchestrate_tokenization.py b/tests/test_orchestrate_tokenization.py
+new file mode 100644
+index 0000000..04b4df4
+--- /dev/null
++++ b/tests/test_orchestrate_tokenization.py
+@@ -0,0 +1,54 @@
++import json
++from pathlib import Path
++
++from omnivoice.scripts.orchestrate_tokenization import _build_data_config
++
++
++def test_build_data_config_applies_core_repeat_weighting(tmp_path):
++    token_root = tmp_path / "tokens"
++    token_root.mkdir()
++
++    waxal_dir = token_root / "waxal_am_train"
++    waxal_dir.mkdir()
++    (waxal_dir / "data.lst").write_text(
++        f"{waxal_dir}/audios/shard-000000.tar {waxal_dir}/txts/shard-000000.jsonl 10 1800\n",
++        encoding="utf-8",
++    )
++    (waxal_dir / "manifest.summary.json").write_text(
++        json.dumps(
++            {
++                "dataset_name": "waxal",
++                "split_role": "train",
++                "language_id": "am",
++                "repeat_hint": 4,
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    dev_dir = token_root / "emilia_en_dev"
++    dev_dir.mkdir()
++    (dev_dir / "data.lst").write_text(
++        f"{dev_dir}/audios/shard-000000.tar {dev_dir}/txts/shard-000000.jsonl 10 3600\n",
++        encoding="utf-8",
++    )
++    (dev_dir / "manifest.summary.json").write_text(
++        json.dumps(
++            {
++                "dataset_name": "emilia",
++                "split_role": "dev",
++                "language_id": "en",
++                "repeat_hint": 1,
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    output_path = tmp_path / "data_config.json"
++    _build_data_config(token_root, output_path, profile="core")
++    payload = json.loads(output_path.read_text(encoding="utf-8"))
++
++    assert payload["train"][0]["repeat"] == 8
++    assert payload["train"][0]["dataset_name"] == "waxal"
++    assert payload["dev"][0]["repeat"] == 1
++
+diff --git a/tests/test_runpod_launcher.py b/tests/test_runpod_launcher.py
+new file mode 100644
+index 0000000..5703405
+--- /dev/null
++++ b/tests/test_runpod_launcher.py
+@@ -0,0 +1,51 @@
++from omnivoice.runpod.launcher import (
++    RunpodLaunchConfig,
++    _bootstrap_command,
++    _network_volume_payload,
++    _pod_payload,
++)
++
++
++def test_pod_payload_contains_bootstrap_and_env():
++    config = RunpodLaunchConfig(
++        name="mnemosvoice-stage1",
++        gpu_type_id="NVIDIA A100 80GB PCIe",
++        data_center_id="US-KS-2",
++        network_volume_name="mnemosvoice-stage1-workspace",
++        network_volume_size_gb=2048,
++        image_name="runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
++        repo_url="https://github.com/example/OmniVoice.git",
++        repo_branch="mnemosvoice",
++        cloneval_repo_url="https://github.com/amu-cai/cloneval.git",
++        cloneval_repo_branch="main",
++        hf_token="hf_secret",
++        expose_jupyter=True,
++    )
++
++    payload = _pod_payload(config, network_volume_id="vol_123")
++    assert payload["networkVolumeId"] == "vol_123"
++    assert payload["gpuTypeIds"] == ["NVIDIA A100 80GB PCIe"]
++    assert payload["ports"] == ["22/tcp", "8888/http"]
++    assert payload["env"]["HF_TOKEN"] == "hf_secret"
++    assert "bootstrap_omnivoice.sh" in _bootstrap_command(config)
++
++
++def test_network_volume_payload_uses_requested_size_and_datacenter():
++    config = RunpodLaunchConfig(
++        name="mnemosvoice-stage1",
++        gpu_type_id="NVIDIA A100 80GB PCIe",
++        data_center_id="US-KS-2",
++        network_volume_name="mnemosvoice-stage1-workspace",
++        network_volume_size_gb=2048,
++        image_name="runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
++        repo_url="https://github.com/example/OmniVoice.git",
++        repo_branch="mnemosvoice",
++        cloneval_repo_url="https://github.com/amu-cai/cloneval.git",
++        cloneval_repo_branch="main",
++    )
++
++    payload = _network_volume_payload(config)
++    assert payload["name"] == "mnemosvoice-stage1-workspace"
++    assert payload["size"] == 2048
++    assert payload["dataCenterId"] == "US-KS-2"
++

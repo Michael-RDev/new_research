@@ -131,8 +131,12 @@ def _bootstrap_command(config: SharedWorkspaceConfig) -> str:
         f" mkdir -p {config.workspace_mount};"
         f" if [ ! -d {root_repo_path}/.git ]; then git clone --branch {config.root_repo_branch} {config.root_repo_url} {root_repo_path}; fi;"
         f" cd {root_repo_path};"
-        f" bash {config.bootstrap_script};"
+        f" if bash {config.bootstrap_script}; then"
         " echo 'RunPod workspace ready. Keeping container alive.';"
+        " else"
+        " status=$?;"
+        " echo \"RunPod bootstrap failed with status ${status}. Keeping container alive for debugging.\";"
+        " fi;"
         " exec sleep infinity"
     )
 

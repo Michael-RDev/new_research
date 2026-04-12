@@ -38,6 +38,7 @@ def test_bootstrap_command_clones_root_repo_and_runs_root_script():
     command = _bootstrap_command(shared)
     assert "git clone --branch main https://github.com/example/new_research.git /workspace/new_research" in command
     assert "bash scripts/runpod/bootstrap_workspace.sh" in command
+    assert "RunPod bootstrap failed" in command
     assert "exec sleep infinity" in command
 
 
