@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -42,6 +43,7 @@ COMMON_LANGUAGE_ALIASES = {
 }
 
 RAW_AUDIO_BYTE_FIELDS = ("flac", "wav", "mp3", "ogg", "opus", "m4a")
+ATLASFLOW_MAX_AUDIO_DURATION_S = (1600 * 320) / 24_000
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class HFDatasetSpec:
         "audio_duration",
         "duration_ms",
     )
+    trust_remote_code: bool = False
     gated: bool = False
     non_commercial: bool = False
     notes: str = ""
@@ -164,13 +167,14 @@ HF_DATASET_SPECS: dict[str, HFDatasetSpec] = {
             "hi_in": "hi",
             "wo_sn": "wo",
         },
+        trust_remote_code=True,
         notes="Good multilingual coverage; speaker IDs are not exposed, so Aoede uses same-utterance reference fallback.",
     ),
     "mls": HFDatasetSpec(
         source_id="mls",
         dataset_path="facebook/multilingual_librispeech",
         description="Multi-speaker multilingual audiobook corpus with speaker IDs.",
-        default_config="english",
+        default_config="spanish",
         split_aliases={"validation": "dev"},
         config_language_map={
             "dutch": "nl",
@@ -182,7 +186,10 @@ HF_DATASET_SPECS: dict[str, HFDatasetSpec] = {
             "portuguese": "pt",
             "spanish": "es",
         },
-        notes="Config names inferred from the official HF dataset tree and MLS paper naming.",
+        notes=(
+            "Config names inferred from the official HF dataset tree and MLS paper naming. "
+            "The current builder exposes dutch, french, german, italian, polish, portuguese, and spanish."
+        ),
     ),
     "parler_mls_eng_10k": HFDatasetSpec(
         source_id="parler_mls_eng_10k",
@@ -202,123 +209,156 @@ def supported_hf_datasets():
 def atlasflow_default_requests(
     max_train_examples: Optional[int] = 20_000,
     max_eval_examples: Optional[int] = 512,
+    max_duration_s: Optional[float] = ATLASFLOW_MAX_AUDIO_DURATION_S,
 ):
     requests = [
         HFIngestRequest(
-            "waxalnlp", split="train", max_examples=min_or_none(max_train_examples, 834)
+            "waxalnlp",
+            split="train",
+            max_examples=min_or_none(max_train_examples, 834),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "waxalnlp",
             split="validation",
             max_examples=min_or_none(max_eval_examples, 97),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "peoples_speech",
             split="train",
             config_name="clean",
             max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "peoples_speech",
             split="validation",
             config_name="clean",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
-        HFIngestRequest("emilia_nv", split="train", max_examples=max_train_examples),
         HFIngestRequest(
-            "emilia_dataset", split="train", max_examples=max_train_examples
+            "emilia_nv",
+            split="train",
+            max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
+        ),
+        HFIngestRequest(
+            "emilia_dataset",
+            split="train",
+            max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="train",
             config_name="en_us",
             max_examples=min_or_none(max_train_examples, 2_500),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="validation",
             config_name="en_us",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="train",
             config_name="es_419",
             max_examples=min_or_none(max_train_examples, 2_500),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="validation",
             config_name="es_419",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="train",
             config_name="hi_in",
             max_examples=min_or_none(max_train_examples, 2_500),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="validation",
             config_name="hi_in",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="train",
             config_name="cmn_hans_cn",
             max_examples=min_or_none(max_train_examples, 2_500),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "fleurs",
             split="validation",
             config_name="cmn_hans_cn",
             max_examples=max_eval_examples,
-        ),
-        HFIngestRequest(
-            "mls", split="train", config_name="english", max_examples=max_train_examples
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
-            split="validation",
-            config_name="english",
-            max_examples=max_eval_examples,
-        ),
-        HFIngestRequest(
-            "mls", split="train", config_name="spanish", max_examples=max_train_examples
+            split="train",
+            config_name="spanish",
+            max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="spanish",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
-            "mls", split="train", config_name="french", max_examples=max_train_examples
+            "mls",
+            split="train",
+            config_name="french",
+            max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="french",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
-            "mls", split="train", config_name="german", max_examples=max_train_examples
+            "mls",
+            split="train",
+            config_name="german",
+            max_examples=max_train_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="german",
             max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "parler_mls_eng_10k",
             split="train",
             max_examples=min_or_none(max_train_examples, 10_000),
+            max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
-            "parler_mls_eng_10k", split="validation", max_examples=max_eval_examples
+            "parler_mls_eng_10k",
+            split="validation",
+            max_examples=max_eval_examples,
+            max_duration_s=max_duration_s,
         ),
     ]
     return requests
@@ -513,6 +553,8 @@ def _iter_dataset_rows(request: HFIngestRequest, spec: HFDatasetSpec):
 
     split_name = spec.split_aliases.get(request.split, request.split)
     load_kwargs: dict[str, Any] = {"split": split_name, "streaming": request.streaming}
+    if spec.trust_remote_code:
+        load_kwargs["trust_remote_code"] = True
     config_name = request.config_name or spec.default_config
     if config_name:
         dataset = load_dataset(spec.dataset_path, config_name, **load_kwargs)
@@ -680,15 +722,60 @@ def prepare_atlasflow_training_assets(
     audio_root = config.resolve(config.artifacts.datasets_dir) / "hf_audio"
     requests = list(requests or atlasflow_default_requests())
     prepared: list[PreparedSource] = []
-    for request in requests:
-        prepared.append(
-            prepare_hf_source(
+    failures: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    total = len(requests)
+    for index, request in enumerate(requests, start=1):
+        print(
+            f"[{index}/{total}] START source={request.source_id} config={request.config_name} split={request.split}",
+            flush=True,
+        )
+        spec = HF_DATASET_SPECS[request.source_id]
+        try:
+            prepared_source = prepare_hf_source(
                 request=request,
                 manifest_dir=manifest_dir,
                 audio_root=audio_root,
                 sample_rate=sample_rate,
             )
-        )
+        except Exception as exc:
+            failure = {
+                "source_id": request.source_id,
+                "dataset_path": spec.dataset_path,
+                "config_name": request.config_name or spec.default_config,
+                "split": request.split,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            failures.append(failure)
+            print(
+                f"[{index}/{total}] FAIL {failure['error_type']}: {failure['error']}",
+                flush=True,
+            )
+            continue
+
+        prepared.append(prepared_source)
+        if not prepared_source.entries:
+            warning = {
+                "source_id": request.source_id,
+                "dataset_path": spec.dataset_path,
+                "config_name": request.config_name or spec.default_config,
+                "split": request.split,
+                "warning_type": "empty_source",
+                "warning": "No entries were materialized for this source.",
+                "skipped_rows": prepared_source.skipped_rows,
+                "manifest_path": str(prepared_source.manifest_path),
+            }
+            warnings.append(warning)
+            print(
+                f"[{index}/{total}] WARN empty_source skipped={prepared_source.skipped_rows} manifest={prepared_source.manifest_path}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[{index}/{total}] DONE entries={len(prepared_source.entries)} skipped={prepared_source.skipped_rows} manifest={prepared_source.manifest_path}",
+                flush=True,
+            )
 
     train_sources = [item for item in prepared if item.request.split == "train"]
     eval_sources = [item for item in prepared if item.request.split != "train"]
@@ -706,6 +793,8 @@ def prepare_atlasflow_training_assets(
 
     summary = {
         "prepared_sources": [item.to_dict() for item in prepared],
+        "warnings": warnings,
+        "failures": failures,
         "train_manifest": str(manifest_dir / train_manifest_name),
         "eval_manifest": str(manifest_dir / eval_manifest_name),
         "train_entries": len(train_entries),
@@ -726,6 +815,40 @@ def parse_request(value: str):
     return HFIngestRequest(source_id=source_id, config_name=config_name, split=split)
 
 
+def _resolve_env_file(env_file: str | os.PathLike[str] | None, project_root: Path) -> Optional[Path]:
+    if not env_file:
+        return None
+    candidate = Path(env_file).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    project_candidate = (project_root / candidate).resolve()
+    if project_candidate.exists():
+        return project_candidate
+    if candidate.exists():
+        return candidate.resolve()
+    return project_candidate
+
+
+def _load_env_file(path: Optional[Path], override: bool = False) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if not key:
+            continue
+        values[key] = value
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return values
+
+
 def _cli(argv: Optional[Sequence[str]] = None):
     parser = argparse.ArgumentParser(
         description="Prepare Aoede manifests and tokenizer assets from Hugging Face datasets.",
@@ -735,6 +858,12 @@ def _cli(argv: Optional[Sequence[str]] = None):
         type=Path,
         default=Path("."),
         help="Workspace root where Aoede artifacts live.",
+    )
+    parser.add_argument(
+        "--env-file",
+        type=str,
+        default=".env",
+        help="Optional .env file to load before talking to Hugging Face.",
     )
     parser.add_argument(
         "--source",
@@ -755,6 +884,8 @@ def _cli(argv: Optional[Sequence[str]] = None):
         help="Default cap used by the built-in AtlasFlow mix for each eval source.",
     )
     args = parser.parse_args(argv)
+    project_root = args.project_root.resolve()
+    _load_env_file(_resolve_env_file(args.env_file, project_root))
 
     if args.source:
         requests = [parse_request(raw) for raw in args.source]
@@ -764,7 +895,7 @@ def _cli(argv: Optional[Sequence[str]] = None):
             max_eval_examples=args.max_eval_examples,
         )
     summary = prepare_atlasflow_training_assets(
-        project_root=args.project_root.resolve(),
+        project_root=project_root,
         requests=requests,
     )
     print(json.dumps(summary, indent=2))
@@ -772,3 +903,7 @@ def _cli(argv: Optional[Sequence[str]] = None):
 
 def main():
     _cli()
+
+
+if __name__ == "__main__":
+    main()

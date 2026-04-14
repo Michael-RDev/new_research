@@ -1,9 +1,18 @@
+import os
+import runpy
+import sys
+import types
+import warnings
 from pathlib import Path
 
 import numpy as np
 
 from aoede.audio.io import save_audio_bytes
+from aoede.data.manifest import save_manifest
 from aoede.data.huggingface import (
+    ATLASFLOW_MAX_AUDIO_DURATION_S,
+    _cli,
+    _iter_dataset_rows,
     HFIngestRequest,
     PreparedSource,
     atlasflow_default_requests,
@@ -165,7 +174,139 @@ def test_prepare_training_assets_writes_combined_manifests_and_summary(tmp_path:
     assert (tmp_path / "artifacts" / "tokenizer.json").exists()
 
 
+def test_prepare_training_assets_continues_with_failures_and_empty_sources(tmp_path: Path, monkeypatch):
+    def fake_prepare_hf_source(request, manifest_dir, audio_root, sample_rate=24_000):
+        spec = supported_hf_datasets()[request.source_id]
+        manifest_path = manifest_dir / f"{request.source_id}-{request.split}.jsonl"
+        if request.source_id == "emilia_nv":
+            save_manifest([], manifest_path)
+            return PreparedSource(
+                request=request,
+                spec=spec,
+                manifest_path=manifest_path,
+                entries=[],
+                skipped_rows=17,
+            )
+        if request.source_id == "fleurs":
+            raise ValueError("trust_remote_code missing")
+
+        entries = materialize_rows_to_manifest(
+            rows=[_audio_row(f"{request.source_id}-{request.split}", f"{request.source_id}-speaker", locale="en_us")],
+            request=request,
+            spec=spec,
+            audio_root=audio_root,
+            manifest_path=manifest_path,
+            sample_rate=sample_rate,
+        ).entries
+        return PreparedSource(
+            request=request,
+            spec=spec,
+            manifest_path=manifest_path,
+            entries=entries,
+            skipped_rows=0,
+        )
+
+    monkeypatch.setattr("aoede.data.huggingface.prepare_hf_source", fake_prepare_hf_source)
+    requests = [
+        HFIngestRequest(source_id="waxalnlp", split="train"),
+        HFIngestRequest(source_id="peoples_speech", split="validation", config_name="clean"),
+        HFIngestRequest(source_id="emilia_nv", split="train"),
+        HFIngestRequest(source_id="fleurs", split="train", config_name="en_us"),
+    ]
+    summary = prepare_atlasflow_training_assets(project_root=tmp_path, requests=requests)
+
+    assert summary["train_entries"] == 1
+    assert summary["eval_entries"] == 1
+    assert len(summary["warnings"]) == 1
+    assert summary["warnings"][0]["source_id"] == "emilia_nv"
+    assert len(summary["failures"]) == 1
+    assert summary["failures"][0]["source_id"] == "fleurs"
+    assert (tmp_path / "artifacts" / "manifests" / "train.jsonl").exists()
+    assert (tmp_path / "artifacts" / "manifests" / "eval.jsonl").exists()
+    assert (tmp_path / "artifacts" / "manifests" / "atlasflow_hf_summary.json").exists()
+    assert (tmp_path / "artifacts" / "tokenizer.json").exists()
+
+
 def test_default_atlasflow_requests_cover_named_datasets():
     requests = atlasflow_default_requests(max_train_examples=100, max_eval_examples=10)
     keys = {request.source_id for request in requests}
     assert {"waxalnlp", "peoples_speech", "emilia_nv", "emilia_dataset"}.issubset(keys)
+
+
+def test_default_atlasflow_requests_drop_mls_english_and_cap_duration():
+    requests = atlasflow_default_requests(max_train_examples=100, max_eval_examples=10)
+    assert all(
+        not (request.source_id == "mls" and request.config_name == "english")
+        for request in requests
+    )
+    assert all(request.max_duration_s == ATLASFLOW_MAX_AUDIO_DURATION_S for request in requests)
+
+
+def test_iter_dataset_rows_enables_trust_remote_code_for_fleurs(monkeypatch):
+    calls = []
+
+    def fake_load_dataset(path, *args, **kwargs):
+        calls.append((path, args, kwargs))
+        return []
+
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=fake_load_dataset))
+
+    request = HFIngestRequest(source_id="fleurs", split="train", config_name="en_us")
+    spec = supported_hf_datasets()["fleurs"]
+    list(_iter_dataset_rows(request, spec))
+
+    assert calls[0][0] == "google/fleurs"
+    assert calls[0][2]["trust_remote_code"] is True
+
+
+def test_cli_loads_hf_token_from_project_root_env(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("HF_TOKEN=hf_test_token\n", encoding="utf-8")
+
+    previous_hf_token = os.environ.pop("HF_TOKEN", None)
+
+    def fake_prepare_training_assets(project_root, requests):
+        assert project_root == tmp_path.resolve()
+        assert os.environ.get("HF_TOKEN") == "hf_test_token"
+        assert len(requests) == 1
+        return {"train_entries": 0, "eval_entries": 0}
+
+    monkeypatch.setattr(
+        "aoede.data.huggingface.prepare_atlasflow_training_assets",
+        fake_prepare_training_assets,
+    )
+
+    try:
+        _cli(["--project-root", str(tmp_path), "--source", "waxalnlp"])
+    finally:
+        if previous_hf_token is None:
+            os.environ.pop("HF_TOKEN", None)
+        else:
+            os.environ["HF_TOKEN"] = previous_hf_token
+
+
+def test_module_main_executes_cli(tmp_path: Path, monkeypatch):
+    def fake_prepare_training_assets(project_root, requests):
+        assert project_root == tmp_path.resolve()
+        assert len(requests) == 1
+        return {"train_entries": 0, "eval_entries": 0}
+
+    monkeypatch.setattr(
+        "aoede.data.huggingface.prepare_atlasflow_training_assets",
+        fake_prepare_training_assets,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "aoede.data.huggingface",
+            "--project-root",
+            str(tmp_path),
+            "--source",
+            "waxalnlp",
+        ],
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        runpy.run_module("aoede.data.huggingface", run_name="__main__")

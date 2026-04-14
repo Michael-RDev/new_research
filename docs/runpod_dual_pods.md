@@ -79,6 +79,10 @@ PYTHONPATH=/Users/michael/Desktop/new_research \
 This keeps the training and evaluation pods separate, so checkpoints and logs do
 not automatically appear on the other pod.
 
+If you use `--skip_network_volume`, prefer **Stop Pod** when you are done for
+the day. Stopping preserves the pod volume mounted at `/workspace`. **Terminate
+Pod** deletes that workspace volume entirely.
+
 ## Connect to the pods
 
 Use RunPod’s **Connect** tab and SSH into each pod. Official docs:
@@ -97,11 +101,29 @@ source .venv/bin/activate
 bash scripts/runpod/run_aoede_training.sh 0 2 smoke
 ```
 
+The `smoke` profile stages a small sample from every configured Hugging Face
+source before training:
+
+- up to `128` train examples per source
+- up to `16` eval examples per source
+
+You can override those caps explicitly:
+
+```bash
+HF_MAX_TRAIN_EXAMPLES=256 HF_MAX_EVAL_EXAMPLES=32 \
+bash scripts/runpod/run_aoede_training.sh 0 2 smoke
+```
+
 For the larger stage-1 core run:
 
 ```bash
 bash scripts/runpod/run_aoede_training.sh 0 2 core
 ```
+
+The `core` profile keeps the same sampled staging flow, but uses larger caps:
+
+- up to `1024` train examples per source
+- up to `64` eval examples per source
 
 ## Run OmniVoice evaluation
 
