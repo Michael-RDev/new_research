@@ -12,6 +12,7 @@ OMNIVOICE_REPO_BRANCH="${OMNIVOICE_REPO_BRANCH:-master}"
 OMNIVOICE_DIR="${OMNIVOICE_DIR:-${ROOT_REPO_DIR}/OmniVoice}"
 OMNIVOICE_BASE_COMMIT_FILE="${OMNIVOICE_BASE_COMMIT_FILE:-${ROOT_REPO_DIR}/patches/omnivoice-base-commit.txt}"
 OMNIVOICE_PATCH_FILE="${OMNIVOICE_PATCH_FILE:-${ROOT_REPO_DIR}/patches/omnivoice-local.patch}"
+OMNIVOICE_PATCH_MARKER="${OMNIVOICE_PATCH_MARKER:-${OMNIVOICE_DIR}/.aoede_patch_sha256}"
 FORCE_OMNIVOICE_RECLONE="${FORCE_OMNIVOICE_RECLONE:-0}"
 CLONEVAL_REPO_URL="${CLONEVAL_REPO_URL:-https://github.com/amu-cai/cloneval.git}"
 CLONEVAL_REPO_BRANCH="${CLONEVAL_REPO_BRANCH:-main}"
@@ -25,6 +26,48 @@ RUNPOD_DATASETS_VERSION="${RUNPOD_DATASETS_VERSION:-3.6.0}"
 
 mkdir -p "${WORKSPACE}"
 
+OMNIVOICE_BASE_COMMIT=""
+if [ -f "${OMNIVOICE_BASE_COMMIT_FILE}" ]; then
+  OMNIVOICE_BASE_COMMIT="$(tr -d '[:space:]' < "${OMNIVOICE_BASE_COMMIT_FILE}")"
+fi
+
+ensure_omnivoice_checkout() {
+  if [ ! -d "${OMNIVOICE_DIR}/.git" ]; then
+    rm -rf "${OMNIVOICE_DIR}"
+    git clone --branch "${OMNIVOICE_REPO_BRANCH}" "${OMNIVOICE_REPO_URL}" "${OMNIVOICE_DIR}"
+  fi
+
+  if [ -n "${OMNIVOICE_BASE_COMMIT}" ]; then
+    git -C "${OMNIVOICE_DIR}" checkout "${OMNIVOICE_BASE_COMMIT}"
+  fi
+}
+
+apply_omnivoice_patch() {
+  if [ ! -f "${OMNIVOICE_PATCH_FILE}" ]; then
+    return 0
+  fi
+
+  local patch_sha
+  patch_sha="$(sha256sum "${OMNIVOICE_PATCH_FILE}" | awk '{print $1}')"
+  if [ -f "${OMNIVOICE_PATCH_MARKER}" ] && [ "$(cat "${OMNIVOICE_PATCH_MARKER}")" = "${patch_sha}" ]; then
+    echo "OmniVoice patch already applied; reusing checkout."
+    return 0
+  fi
+
+  if git -C "${OMNIVOICE_DIR}" apply --check --binary "${OMNIVOICE_PATCH_FILE}" >/dev/null 2>&1; then
+    git -C "${OMNIVOICE_DIR}" apply --binary "${OMNIVOICE_PATCH_FILE}"
+  elif git -C "${OMNIVOICE_DIR}" apply --check --reverse --binary "${OMNIVOICE_PATCH_FILE}" >/dev/null 2>&1; then
+    echo "OmniVoice patch already present in checkout; recording marker."
+  else
+    echo "Existing OmniVoice checkout is not patchable cleanly; recloning."
+    rm -rf "${OMNIVOICE_DIR}"
+    ensure_omnivoice_checkout
+    git -C "${OMNIVOICE_DIR}" apply --binary "${OMNIVOICE_PATCH_FILE}"
+  fi
+
+  printf '%s\n' "${patch_sha}" > "${OMNIVOICE_PATCH_MARKER}"
+}
+
 if [ ! -d "${ROOT_REPO_DIR}/.git" ]; then
   if [ -z "${ROOT_REPO_URL}" ]; then
     echo "ROOT_REPO_URL must be set when ${ROOT_REPO_DIR} does not exist."
@@ -37,21 +80,8 @@ if [ "${FORCE_OMNIVOICE_RECLONE}" = "1" ] && [ -d "${OMNIVOICE_DIR}" ]; then
   rm -rf "${OMNIVOICE_DIR}"
 fi
 
-if [ ! -d "${OMNIVOICE_DIR}/.git" ]; then
-  rm -rf "${OMNIVOICE_DIR}"
-  git clone --branch "${OMNIVOICE_REPO_BRANCH}" "${OMNIVOICE_REPO_URL}" "${OMNIVOICE_DIR}"
-fi
-
-if [ -f "${OMNIVOICE_BASE_COMMIT_FILE}" ]; then
-  OMNIVOICE_BASE_COMMIT="$(tr -d '[:space:]' < "${OMNIVOICE_BASE_COMMIT_FILE}")"
-  if [ -n "${OMNIVOICE_BASE_COMMIT}" ]; then
-    git -C "${OMNIVOICE_DIR}" checkout "${OMNIVOICE_BASE_COMMIT}"
-  fi
-fi
-
-if [ -f "${OMNIVOICE_PATCH_FILE}" ]; then
-  git -C "${OMNIVOICE_DIR}" apply --binary "${OMNIVOICE_PATCH_FILE}"
-fi
+ensure_omnivoice_checkout
+apply_omnivoice_patch
 
 if [ ! -d "${CLONEVAL_DIR}/.git" ]; then
   git clone --branch "${CLONEVAL_REPO_BRANCH}" "${CLONEVAL_REPO_URL}" "${CLONEVAL_DIR}"
@@ -64,7 +94,9 @@ if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; 
   DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
 fi
 
-rm -rf .venv
+if [ -d .venv ]; then
+  rm -rf .venv || mv .venv ".venv.bad.$(date +%s)"
+fi
 ${PYTHON_BIN} -m venv .venv
 source .venv/bin/activate
 

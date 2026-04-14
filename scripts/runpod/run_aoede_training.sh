@@ -38,8 +38,14 @@ esac
 MANIFEST_PATH="${MANIFEST_PATH:-artifacts/manifests/train.jsonl}"
 
 cd "${ROOT_REPO_DIR}"
+if [ ! -x "${PYTHON_BIN}" ] || ! "${PYTHON_BIN}" -c "import torch" >/dev/null 2>&1; then
+  echo "Workspace Python env is missing required dependencies; running bootstrap first."
+  bash scripts/runpod/bootstrap_workspace.sh
+fi
+
+PYTHON_BIN="${ROOT_REPO_DIR}/.venv/bin/python"
 source .venv/bin/activate
-export PYTHONPATH="${ROOT_REPO_DIR}:${PYTHONPATH:-}"
+export PYTHONPATH="${ROOT_REPO_DIR}:${ROOT_REPO_DIR}/OmniVoice:${PYTHONPATH:-}"
 
 if [ "${stage}" -le 0 ] && [ "${stop_stage}" -ge 0 ]; then
   echo "Stage 0: prepare Aoede manifests and tokenizer"
