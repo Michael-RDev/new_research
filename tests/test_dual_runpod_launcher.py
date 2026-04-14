@@ -3,8 +3,10 @@ from aoede.runpod.dual_pod_launcher import (
     RunpodClient,
     SharedWorkspaceConfig,
     _bootstrap_command,
+    _create_pod_with_fallbacks,
     _network_volume_payload,
     _pod_payload,
+    _resource_fallbacks,
 )
 
 
@@ -105,3 +107,37 @@ def test_client_accepts_top_level_list_responses(monkeypatch):
 
     assert client.list_pods() == [{"id": "pod_123"}]
     assert client.list_network_volumes() == [{"id": "vol_123"}]
+
+
+def test_resource_fallbacks_include_smaller_shapes():
+    fallbacks = _resource_fallbacks(_shared_config())
+    assert fallbacks[0] == (16, 125)
+    assert (8, 50) in fallbacks
+    assert (6, 31) in fallbacks
+    assert (4, 16) in fallbacks
+
+
+def test_create_pod_with_fallbacks_retries_smaller_shape(monkeypatch):
+    client = RunpodClient(api_key="rp_test")
+    attempts = []
+
+    def fake_create_pod(payload):
+        attempts.append((payload["gpuTypeIds"][0], payload["minVCPUPerGPU"], payload["minRAMPerGPU"]))
+        if len(attempts) == 1:
+            raise RuntimeError("There are no instances currently available")
+        return {"id": "pod_123"}
+
+    monkeypatch.setattr(client, "create_pod", fake_create_pod)
+
+    created = _create_pod_with_fallbacks(
+        client=client,
+        shared=_shared_config(),
+        pod=PodLaunchConfig(name="aoede-train", gpu_type_id="NVIDIA RTX A5000"),
+        network_volume_id=None,
+    )
+
+    assert attempts[0] == ("NVIDIA RTX A5000", 16, 125)
+    assert attempts[1] == ("NVIDIA RTX A5000", 8, 50)
+    assert created["selected_gpu_type_id"] == "NVIDIA RTX A5000"
+    assert created["selected_vcpu_count"] == 8
+    assert created["selected_memory_in_gb"] == 50

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 from urllib import error, parse, request
@@ -58,6 +58,7 @@ class PodLaunchConfig:
     name: str
     gpu_type_id: str
     expose_jupyter: bool = False
+    fallback_gpu_type_ids: tuple[str, ...] = ()
 
 
 class RunpodClient:
@@ -262,10 +263,23 @@ def _add_shared_args(parser: argparse.ArgumentParser):
 def _add_pod_args(parser: argparse.ArgumentParser):
     parser.add_argument("--train_name", type=str, default="aoede-train")
     parser.add_argument("--train_gpu_type_id", type=str, default="NVIDIA A100 80GB PCIe")
+    parser.add_argument(
+        "--train_gpu_fallback_id",
+        action="append",
+        default=[],
+        help="Fallback RunPod GPU type id for the training pod. Repeatable.",
+    )
     parser.add_argument("--train_expose_jupyter", action="store_true")
     parser.add_argument("--eval_name", type=str, default="omnivoice-eval")
     parser.add_argument("--eval_gpu_type_id", type=str, default="NVIDIA A100 80GB PCIe")
+    parser.add_argument(
+        "--eval_gpu_fallback_id",
+        action="append",
+        default=[],
+        help="Fallback RunPod GPU type id for the eval pod. Repeatable.",
+    )
     parser.add_argument("--eval_expose_jupyter", action="store_true")
+    parser.add_argument("--skip_eval_pod", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
 
 
@@ -301,13 +315,77 @@ def _build_pod_configs(args) -> tuple[PodLaunchConfig, PodLaunchConfig]:
         name=args.train_name,
         gpu_type_id=args.train_gpu_type_id,
         expose_jupyter=args.train_expose_jupyter,
+        fallback_gpu_type_ids=tuple(args.train_gpu_fallback_id),
     )
     eval_pod = PodLaunchConfig(
         name=args.eval_name,
         gpu_type_id=args.eval_gpu_type_id,
         expose_jupyter=args.eval_expose_jupyter,
+        fallback_gpu_type_ids=tuple(args.eval_gpu_fallback_id),
     )
     return train, eval_pod
+
+
+def _resource_fallbacks(shared: SharedWorkspaceConfig) -> tuple[tuple[int, int], ...]:
+    candidates: list[tuple[int, int]] = [
+        (shared.vcpu_count, shared.memory_in_gb),
+        (8, 50),
+        (6, 31),
+        (4, 16),
+    ]
+    deduped: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+    return tuple(deduped)
+
+
+def _create_pod_with_fallbacks(
+    client: RunpodClient,
+    shared: SharedWorkspaceConfig,
+    pod: PodLaunchConfig,
+    network_volume_id: Optional[str],
+):
+    last_error: Optional[RuntimeError] = None
+    gpu_candidates = (pod.gpu_type_id, *pod.fallback_gpu_type_ids)
+    resource_candidates = _resource_fallbacks(shared)
+    for gpu_type_id in gpu_candidates:
+        for vcpu_count, memory_in_gb in resource_candidates:
+            pod_variant = PodLaunchConfig(
+                name=pod.name,
+                gpu_type_id=gpu_type_id,
+                expose_jupyter=pod.expose_jupyter,
+                fallback_gpu_type_ids=(),
+            )
+            shared_variant = replace(
+                shared,
+                vcpu_count=vcpu_count,
+                memory_in_gb=memory_in_gb,
+            )
+            payload = _pod_payload(
+                shared_variant,
+                pod_variant,
+                network_volume_id=network_volume_id,
+            )
+            try:
+                created = client.create_pod(payload)
+                return {
+                    "requested_gpu_type_id": pod.gpu_type_id,
+                    "selected_gpu_type_id": gpu_type_id,
+                    "selected_vcpu_count": vcpu_count,
+                    "selected_memory_in_gb": memory_in_gb,
+                    "pod": created,
+                }
+            except RuntimeError as exc:
+                last_error = exc
+                if "There are no instances currently available" not in str(exc):
+                    raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"No GPU candidates were provided for pod {pod.name}")
 
 
 def main() -> None:
@@ -345,16 +423,23 @@ def main() -> None:
         volume_payload = None if args.skip_network_volume else _network_volume_payload(shared)
         planned_network_volume_id = None if args.skip_network_volume else "<create-me>"
         train_payload = _pod_payload(shared, train_pod, network_volume_id=planned_network_volume_id)
-        eval_payload = _pod_payload(shared, eval_pod, network_volume_id=planned_network_volume_id)
+        eval_payload = (
+            None
+            if args.skip_eval_pod
+            else _pod_payload(shared, eval_pod, network_volume_id=planned_network_volume_id)
+        )
         if args.dry_run:
-            _print_json(
-                {
-                    "shared_workspace": asdict(shared),
-                    "network_volume_payload": volume_payload,
-                    "train_pod_payload": train_payload,
-                    "eval_pod_payload": eval_payload,
-                }
-            )
+            payload = {
+                "shared_workspace": asdict(shared),
+                "network_volume_payload": volume_payload,
+                "train_pod_payload": train_payload,
+                "eval_pod_payload": eval_payload,
+            }
+            if train_pod.fallback_gpu_type_ids:
+                payload["train_gpu_fallback_ids"] = list(train_pod.fallback_gpu_type_ids)
+            if eval_pod.fallback_gpu_type_ids:
+                payload["eval_gpu_fallback_ids"] = list(eval_pod.fallback_gpu_type_ids)
+            _print_json(payload)
             return
 
     api_key = env_values.get(args.runpod_key_env) or os.environ.get(args.runpod_key_env)
@@ -373,25 +458,26 @@ def main() -> None:
                 data_center_id=shared.data_center_ids[0],
             )
             network_volume = existing_volume or client.create_network_volume(volume_payload)
-        train_payload = _pod_payload(
-            shared,
-            train_pod,
-            network_volume_id=None if network_volume is None else network_volume["id"],
+        network_volume_id = None if network_volume is None else network_volume["id"]
+        created_train = _create_pod_with_fallbacks(
+            client=client,
+            shared=shared,
+            pod=train_pod,
+            network_volume_id=network_volume_id,
         )
-        eval_payload = _pod_payload(
-            shared,
-            eval_pod,
-            network_volume_id=None if network_volume is None else network_volume["id"],
-        )
-        created_train = client.create_pod(train_payload)
-        created_eval = client.create_pod(eval_payload)
-        _print_json(
-            {
-                "network_volume": network_volume,
-                "train_pod": created_train,
-                "eval_pod": created_eval,
-            }
-        )
+        payload = {
+            "network_volume": network_volume,
+            "train_pod": created_train,
+        }
+        if not args.skip_eval_pod:
+            created_eval = _create_pod_with_fallbacks(
+                client=client,
+                shared=shared,
+                pod=eval_pod,
+                network_volume_id=network_volume_id,
+            )
+            payload["eval_pod"] = created_eval
+        _print_json(payload)
         return
 
     if args.command == "status":
