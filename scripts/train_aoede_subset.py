@@ -275,7 +275,9 @@ def main() -> None:
             history.append({"step": steps, **metrics})
             print(
                 "step={step} loss={loss:.4f} flow={flow_loss:.4f} duration={duration_loss:.4f} "
-                "speaker={speaker_loss:.4f} planner={planner_loss:.4f}".format(**history[-1]),
+                "speaker={speaker_loss:.4f} planner={planner_loss:.4f} grad={grad_norm:.4f}".format(
+                    **history[-1]
+                ),
                 flush=True,
             )
             if steps % args.checkpoint_every == 0:

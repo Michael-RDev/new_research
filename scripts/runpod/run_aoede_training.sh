@@ -13,26 +13,26 @@ PYTHON_BIN="${PYTHON_BIN:-${ROOT_REPO_DIR}/.venv/bin/python}"
 OMNIVOICE_INIT="${OMNIVOICE_INIT:-k2-fsa/OmniVoice}"
 
 case "${profile}" in
-  smoke)
-    OUTPUT_DIR="${WORKSPACE}/exp/aoede_smoke"
-    MAX_SAMPLES="${MAX_SAMPLES:-256}"
-    MAX_STEPS="${MAX_STEPS:-500}"
-    BATCH_SIZE="${BATCH_SIZE:-2}"
-    HF_MAX_TRAIN_EXAMPLES="${HF_MAX_TRAIN_EXAMPLES:-128}"
-    HF_MAX_EVAL_EXAMPLES="${HF_MAX_EVAL_EXAMPLES:-16}"
-    ;;
-  core)
-    OUTPUT_DIR="${WORKSPACE}/exp/aoede_stage1_core"
-    MAX_SAMPLES="${MAX_SAMPLES:-0}"
-    MAX_STEPS="${MAX_STEPS:-20000}"
-    BATCH_SIZE="${BATCH_SIZE:-4}"
-    HF_MAX_TRAIN_EXAMPLES="${HF_MAX_TRAIN_EXAMPLES:-1024}"
-    HF_MAX_EVAL_EXAMPLES="${HF_MAX_EVAL_EXAMPLES:-64}"
-    ;;
-  *)
-    echo "Unsupported profile: ${profile}. Use smoke or core."
-    exit 1
-    ;;
+smoke)
+  OUTPUT_DIR="${WORKSPACE}/exp/aoede_smoke"
+  MAX_SAMPLES="${MAX_SAMPLES:-256}"
+  MAX_STEPS="${MAX_STEPS:-500}"
+  BATCH_SIZE="${BATCH_SIZE:-2}"
+  HF_MAX_TRAIN_EXAMPLES="${HF_MAX_TRAIN_EXAMPLES:-128}"
+  HF_MAX_EVAL_EXAMPLES="${HF_MAX_EVAL_EXAMPLES:-16}"
+  ;;
+core)
+  OUTPUT_DIR="${WORKSPACE}/exp/aoede_stage1_core"
+  MAX_SAMPLES="${MAX_SAMPLES:-0}"
+  MAX_STEPS="${MAX_STEPS:-20000}"
+  BATCH_SIZE="${BATCH_SIZE:-4}"
+  HF_MAX_TRAIN_EXAMPLES="${HF_MAX_TRAIN_EXAMPLES:-1024}"
+  HF_MAX_EVAL_EXAMPLES="${HF_MAX_EVAL_EXAMPLES:-64}"
+  ;;
+*)
+  echo "Unsupported profile: ${profile}. Use smoke or core."
+  exit 1
+  ;;
 esac
 
 MANIFEST_PATH="${MANIFEST_PATH:-artifacts/manifests/train.jsonl}"

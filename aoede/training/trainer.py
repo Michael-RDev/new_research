@@ -22,11 +22,19 @@ class Trainer:
             lr=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
         )
+        self.autocast_dtype: Optional[torch.dtype] = None
+        self.scaler: Optional[torch.cuda.amp.GradScaler] = None
+        if self.config.training.mixed_precision and self.device.type == "cuda":
+            if torch.cuda.is_bf16_supported():
+                self.autocast_dtype = torch.bfloat16
+            else:
+                self.autocast_dtype = torch.float16
+                self.scaler = torch.cuda.amp.GradScaler()
         self.step = 0
 
     def _autocast(self):
-        if self.config.training.mixed_precision and self.device.type == "cuda":
-            return torch.autocast(device_type="cuda", dtype=torch.float16)
+        if self.autocast_dtype is not None:
+            return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
         return nullcontext()
 
     def train_step(self, batch: Dict[str, Union[torch.Tensor, List[str]]]):
@@ -48,11 +56,40 @@ class Trainer:
                 prosody_targets=tensor_batch.get("prosody_targets"),
                 has_reference=tensor_batch.get("has_reference"),
             )
-        output["loss"].backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.grad_clip)
-        self.optimizer.step()
+        non_finite = [
+            key
+            for key, value in output.items()
+            if isinstance(value, torch.Tensor) and not torch.isfinite(value).all()
+        ]
+        if non_finite:
+            raise FloatingPointError(
+                f"Non-finite model outputs at step {self.step + 1}: {', '.join(non_finite)}"
+            )
+
+        loss = output["loss"]
+        if self.scaler is not None:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+        else:
+            loss.backward()
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(), self.config.training.grad_clip
+        )
+        if not torch.isfinite(grad_norm):
+            raise FloatingPointError(
+                f"Non-finite gradient norm at step {self.step + 1}: {float(grad_norm.detach().cpu())}"
+            )
+
+        if self.scaler is not None:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
         self.step += 1
-        return {key: float(value.detach().cpu()) for key, value in output.items()}
+        metrics = {key: float(value.detach().cpu()) for key, value in output.items()}
+        metrics["grad_norm"] = float(grad_norm.detach().cpu())
+        return metrics
 
     def run(
         self,
