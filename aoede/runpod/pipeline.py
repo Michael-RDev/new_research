@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -94,6 +95,23 @@ class PipelinePlan:
     audio_preflight_command: Optional[list[str]]
     eval_command: Optional[list[str]]
     core_handoff_command: Optional[list[str]]
+
+
+def _summary_path(paths: RunPodPaths) -> Path:
+    return paths.repo_root / "artifacts" / "manifests" / "atlasflow_hf_summary.json"
+
+
+def _stage_completed_despite_abort(paths: RunPodPaths) -> bool:
+    summary_path = _summary_path(paths)
+    if not summary_path.exists() or not paths.manifest_path.exists():
+        return False
+
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+
+    return int(summary.get("train_entries", 0)) > 0
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -490,7 +508,17 @@ def _run_command(command: Sequence[str], *, cwd: Path) -> None:
 
 def execute_pipeline(plan: PipelinePlan) -> None:
     print(f"Stage training data ({plan.config.profile})", flush=True)
-    _run_command(plan.stage_command, cwd=plan.paths.repo_root)
+    try:
+        _run_command(plan.stage_command, cwd=plan.paths.repo_root)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode in {-6, 134} and _stage_completed_despite_abort(plan.paths):
+            print(
+                "Stage subprocess aborted during interpreter shutdown after writing manifests; "
+                "reusing staged training data and continuing.",
+                flush=True,
+            )
+        else:
+            raise
 
     print(f"Train Aoede ({plan.config.profile})", flush=True)
     _run_command(plan.train_command, cwd=plan.paths.repo_root)

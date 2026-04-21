@@ -1,6 +1,13 @@
+import json
+import subprocess
 from pathlib import Path
 
-from aoede.runpod.pipeline import build_pipeline_plan, get_parser, resolve_paths
+from aoede.runpod.pipeline import (
+    build_pipeline_plan,
+    execute_pipeline,
+    get_parser,
+    resolve_paths,
+)
 
 
 def _parse(*args: str):
@@ -79,3 +86,46 @@ def test_resolve_paths_keeps_virtualenv_python_path_instead_of_resolving_symlink
     paths = resolve_paths(args)
 
     assert paths.python_bin == python_link
+
+
+def test_execute_pipeline_continues_after_stage_sigabrt_when_manifest_summary_exists(
+    tmp_path: Path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "new_research"
+    manifest_dir = repo_root / "artifacts" / "manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "train.jsonl").write_text("{}\n", encoding="utf-8")
+    (manifest_dir / "atlasflow_hf_summary.json").write_text(
+        json.dumps({"train_entries": 10, "eval_entries": 2}),
+        encoding="utf-8",
+    )
+
+    plan = build_pipeline_plan(
+        get_parser().parse_args(
+            [
+                "--workspace",
+                str(workspace),
+                "--root-repo-dir",
+                str(repo_root),
+                "--python-bin",
+                str(repo_root / ".venv" / "bin" / "python"),
+                "--profile",
+                "core",
+            ]
+        )
+    )
+
+    calls = []
+
+    def fake_run(command, *, cwd):
+        calls.append((tuple(command), cwd))
+        if command == plan.stage_command:
+            raise subprocess.CalledProcessError(returncode=-6, cmd=command)
+
+    monkeypatch.setattr("aoede.runpod.pipeline._run_command", fake_run)
+
+    execute_pipeline(plan)
+
+    assert calls[0][0] == tuple(plan.stage_command)
+    assert calls[1][0] == tuple(plan.train_command)
