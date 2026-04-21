@@ -184,6 +184,7 @@ def main() -> None:
         max_latent_frames=DEFAULT_MAX_LATENT_FRAMES,
         codec_hop_length=DEFAULT_CODEC_HOP_LENGTH,
         sample_rate=DEFAULT_SAMPLE_RATE,
+        validate_audio_paths=True,
     )
     if args.max_samples > 0:
         filtered_entries = _round_robin_subset(
@@ -195,11 +196,15 @@ def main() -> None:
         raise RuntimeError("No trainable entries remain after filtering the source manifest.")
 
     print(
-        "filtered_entries source={source} kept={kept} dropped_text={dropped_text} dropped_audio={dropped_audio}".format(
+        "filtered_entries source={source} kept={kept} dropped_text={dropped_text} "
+        "dropped_audio={dropped_audio} dropped_unreadable={dropped_unreadable} "
+        "cleared_speaker_ref={cleared_speaker_ref}".format(
             source=filter_stats.source_entries,
             kept=len(filtered_entries),
             dropped_text=filter_stats.dropped_text_too_long,
             dropped_audio=filter_stats.dropped_audio_too_long,
+            dropped_unreadable=filter_stats.dropped_audio_unreadable,
+            cleared_speaker_ref=filter_stats.cleared_speaker_ref_unreadable,
         ),
         flush=True,
     )
