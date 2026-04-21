@@ -1,4 +1,6 @@
-from aoede.runpod.pipeline import build_pipeline_plan, get_parser
+from pathlib import Path
+
+from aoede.runpod.pipeline import build_pipeline_plan, get_parser, resolve_paths
 
 
 def _parse(*args: str):
@@ -53,3 +55,27 @@ def test_core_pipeline_reuses_single_entrypoint_and_skips_evals_by_default():
         "-m",
         "aoede.training.train_aoede",
     ]
+
+
+def test_resolve_paths_keeps_virtualenv_python_path_instead_of_resolving_symlink(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    repo_root = workspace / "new_research"
+    venv_bin = repo_root / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python_link = venv_bin / "python"
+    python_link.symlink_to("/usr/bin/python3")
+
+    args = get_parser().parse_args(
+        [
+            "--workspace",
+            str(workspace),
+            "--root-repo-dir",
+            str(repo_root),
+            "--python-bin",
+            str(python_link),
+        ]
+    )
+
+    paths = resolve_paths(args)
+
+    assert paths.python_bin == python_link

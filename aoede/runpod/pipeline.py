@@ -266,6 +266,13 @@ def _resolve_path(base_dir: Path, path: Path) -> Path:
     return (base_dir / path).resolve()
 
 
+def _absolute_path(base_dir: Path, path: Path) -> Path:
+    expanded = path.expanduser()
+    if expanded.is_absolute():
+        return expanded
+    return (base_dir / expanded).absolute()
+
+
 def resolve_paths(args: argparse.Namespace) -> RunPodPaths:
     workspace = args.workspace.expanduser().resolve()
     repo_root = (
@@ -284,9 +291,9 @@ def resolve_paths(args: argparse.Namespace) -> RunPodPaths:
         else (workspace / "cloneval").resolve()
     )
     python_bin = (
-        args.python_bin.expanduser().resolve()
+        _absolute_path(repo_root, args.python_bin)
         if args.python_bin is not None
-        else (repo_root / ".venv" / "bin" / "python").resolve()
+        else (repo_root / ".venv" / "bin" / "python").absolute()
     )
     manifest_path = _resolve_path(repo_root, args.manifest_path)
     return RunPodPaths(
