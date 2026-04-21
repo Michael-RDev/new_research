@@ -98,29 +98,44 @@ On the training pod:
 ```bash
 cd /workspace/new_research
 source .venv/bin/activate
-bash scripts/runpod/run_aoede_training.sh 0 2 smoke
+bash scripts/runpod/run_aoede_pipeline.sh --profile smoke
 ```
 
-The `smoke` profile stages a small sample from every configured Hugging Face
-source before training:
+The single-script `smoke` profile stages a small sample from every configured
+Hugging Face source, trains a smoke Aoede checkpoint, runs the standard
+benchmark comparison, optionally runs CloneEval when you pass a test list, and
+prints the exact `core` command to run later.
+
+Default smoke staging caps:
 
 - up to `128` train examples per source
 - up to `16` eval examples per source
 
-You can override those caps explicitly:
+You can override the smoke staging caps explicitly:
 
 ```bash
-HF_MAX_TRAIN_EXAMPLES=256 HF_MAX_EVAL_EXAMPLES=32 \
-bash scripts/runpod/run_aoede_training.sh 0 2 smoke
+bash scripts/runpod/run_aoede_pipeline.sh \
+  --profile smoke \
+  --max-train-examples 256 \
+  --max-eval-examples 32
 ```
 
-For the larger stage-1 core run:
+To include CloneEval in the smoke evaluation pass:
 
 ```bash
-bash scripts/runpod/run_aoede_training.sh 0 2 core
+bash scripts/runpod/run_aoede_pipeline.sh \
+  --profile smoke \
+  --cloneval-test-list /workspace/data/cloneval/cloneval_smoke.jsonl
 ```
 
-The `core` profile keeps the same sampled staging flow, but uses larger caps:
+For the later larger stage-1 core run:
+
+```bash
+bash scripts/runpod/run_aoede_pipeline.sh --profile core
+```
+
+The `core` profile restages with larger caps before training and skips evals by
+default:
 
 - up to `1024` train examples per source
 - up to `64` eval examples per source

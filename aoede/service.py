@@ -13,7 +13,13 @@ import numpy as np
 from aoede.audio.io import load_audio_bytes, save_audio_bytes
 from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.config import AppConfig, default_config
-from aoede.languages import experimental_languages, production_languages, resolve_language
+from aoede.languages import (
+    experimental_languages,
+    language_index,
+    normalize_language,
+    production_languages,
+    resolve_language,
+)
 from aoede.profiles import VoiceProfileStore
 from aoede.schemas import (
     HealthResponse,
@@ -262,12 +268,12 @@ class TorchRuntime:
 
     def synthesize_array(self, request: SynthesisRequest, profile: VoiceProfile):
         token_ids = self.torch.tensor(
-            [self.tokenizer.encode(request.text, request.language_code)],
+            [self.tokenizer.encode(request.text, normalize_language(request.language_code))],
             dtype=self.torch.long,
             device=self.device,
         )
         language_ids = self.torch.tensor(
-            [self._language_index(request.language_code)],
+            [language_index(request.language_code)],
             dtype=self.torch.long,
             device=self.device,
         )
@@ -305,11 +311,6 @@ class TorchRuntime:
                 speaker_summary=speaker_summary,
             )
         return waveform[0].detach().cpu().numpy().astype(np.float32)
-
-    @staticmethod
-    def _language_index(language_code: str):
-        return {spec.code: index for index, spec in enumerate(production_languages(), start=1)}.get(language_code, 0)
-
 
 class AoedeService:
     def __init__(self, config: Optional[AppConfig] = None):

@@ -9,7 +9,7 @@ OMNIVOICE_DIR="${OMNIVOICE_DIR:-${ROOT_REPO_DIR}/OmniVoice}"
 CLONEVAL_REPO="${CLONEVAL_REPO:-${WORKSPACE}/cloneval}"
 PYTHON_BIN="${PYTHON_BIN:-${ROOT_REPO_DIR}/.venv/bin/python}"
 
-CANDIDATE_MODEL="${CANDIDATE_MODEL:-${WORKSPACE}/exp/aoede_stage1_core/checkpoint-last}"
+CANDIDATE_MODEL="${CANDIDATE_MODEL:-${WORKSPACE}/exp/aoede_stage1_core/artifacts/checkpoints/checkpoint-last.pt}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORKSPACE}/exp/benchmark_compare}"
 CLONEVAL_TEST_LIST="${CLONEVAL_TEST_LIST:-}"
 

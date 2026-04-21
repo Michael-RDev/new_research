@@ -13,13 +13,8 @@ from aoede.audio.io import load_audio_file
 from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.data.alignments import load_alignment, proportional_durations
 from aoede.data.manifest import ManifestEntry
-from aoede.languages import production_languages
+from aoede.languages import language_index, normalize_language
 from aoede.text.tokenizer import UnicodeTokenizer
-
-
-LANGUAGE_INDEX = {
-    spec.code: index for index, spec in enumerate(production_languages(), start=1)
-}
 
 
 @dataclass
@@ -126,12 +121,13 @@ class ManifestDataset(Dataset):
 
     def __getitem__(self, index: int):
         entry = self.entries[index]
+        language_code = normalize_language(entry.language_code)
         waveform, latents, speaker_embedding = self._load_audio_features(
             entry.audio_path,
             entry.item_id,
         )
         token_ids = torch.tensor(
-            self.tokenizer.encode(entry.text, entry.language_code), dtype=torch.long
+            self.tokenizer.encode(entry.text, language_code), dtype=torch.long
         )
 
         alignment = load_alignment(
@@ -160,7 +156,7 @@ class ManifestDataset(Dataset):
 
         return TrainingExample(
             text=entry.text,
-            language_code=entry.language_code,
+            language_code=language_code,
             token_ids=token_ids,
             waveform=waveform,
             codec_latents=latents,
@@ -197,7 +193,7 @@ def collate_training_examples(examples: Sequence[TrainingExample]):
     has_reference = torch.tensor([example.has_reference for example in examples], dtype=torch.bool)
     speaker_refs = torch.stack([example.speaker_ref for example in examples], dim=0)
     language_ids = torch.tensor(
-        [LANGUAGE_INDEX.get(example.language_code, 0) for example in examples],
+        [language_index(example.language_code) for example in examples],
         dtype=torch.long,
     )
 

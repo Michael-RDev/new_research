@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Union
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,40 @@ LANGUAGE_REGISTRY: Dict[str, LanguageSpec] = {
     spec.code: spec for spec in (*_PRODUCTION, *_EXPERIMENTAL)
 }
 
+LANGUAGE_ALIASES: Dict[str, str] = {
+    "cmn_hans_cn": "zh",
+    "cmn_hant_tw": "zh",
+    "de_de": "de",
+    "en_gb": "en",
+    "en_us": "en",
+    "es_419": "es",
+    "es_es": "es",
+    "fr_fr": "fr",
+    "hi_in": "hi",
+    "it_it": "it",
+    "ja_jp": "ja",
+    "ko_kr": "ko",
+    "nl_nl": "nl",
+    "pt_br": "pt",
+    "pt_pt": "pt",
+    "ru_ru": "ru",
+    "sw_ke": "sw",
+    "sw_tz": "sw",
+    "tr_tr": "tr",
+    "vi_vn": "vi",
+    "wo_sn": "wo",
+    "wol": "wo",
+    "zh_cn": "zh",
+}
+
+_LANGUAGE_LOOKUP: Dict[str, str] = {
+    **{spec.code.lower(): spec.code for spec in (*_PRODUCTION, *_EXPERIMENTAL)},
+    **{spec.name.lower(): spec.code for spec in (*_PRODUCTION, *_EXPERIMENTAL)},
+}
+LANGUAGE_INDEX: Dict[str, int] = {
+    spec.code: index for index, spec in enumerate((*_PRODUCTION, *_EXPERIMENTAL), start=1)
+}
+
 
 def production_languages():
     return list(_PRODUCTION)
@@ -62,9 +96,59 @@ def experimental_languages():
     return list(_EXPERIMENTAL)
 
 
+def all_languages():
+    return [*_PRODUCTION, *_EXPERIMENTAL]
+
+
+def canonical_language(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    raw = str(value).strip()
+    if not raw or raw.lower() == "none":
+        return None
+
+    lowered = raw.lower()
+    if lowered in LANGUAGE_ALIASES:
+        return LANGUAGE_ALIASES[lowered]
+    if lowered in _LANGUAGE_LOOKUP:
+        return _LANGUAGE_LOOKUP[lowered]
+
+    prefix = lowered.split("-", 1)[0]
+    if prefix in LANGUAGE_ALIASES:
+        return LANGUAGE_ALIASES[prefix]
+    if prefix in _LANGUAGE_LOOKUP:
+        return _LANGUAGE_LOOKUP[prefix]
+    return None
+
+
+def normalize_language(value: Optional[str], default: str = "en") -> str:
+    canonical = canonical_language(value)
+    if canonical is not None:
+        return canonical
+
+    if value is None:
+        return default
+
+    raw = str(value).strip()
+    if not raw or raw.lower() == "none":
+        return default
+
+    prefix = raw.lower().split("-", 1)[0]
+    return prefix or default
+
+
+def language_index(value: Optional[str]) -> int:
+    return LANGUAGE_INDEX.get(normalize_language(value), 0)
+
+
 def resolve_language(code: str):
-    return LANGUAGE_REGISTRY.get(code, LanguageSpec(code, code.upper(), "unknown", "unknown", False))
+    normalized = normalize_language(code, default=code)
+    return LANGUAGE_REGISTRY.get(
+        normalized,
+        LanguageSpec(normalized, normalized.upper(), "unknown", "unknown", False),
+    )
 
 
 def language_token(code: str):
-    return f"<lang:{code}>"
+    return f"<lang:{normalize_language(code, default=code)}>"

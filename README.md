@@ -80,6 +80,25 @@ Notes:
   `--source source_id[:config_name[:split]]` arguments, including
   `--source emilia_dataset`.
 
+### RunPod smoke-to-core pipeline
+
+For the single-script RunPod flow, use:
+
+```bash
+bash scripts/runpod/run_aoede_pipeline.sh --profile smoke
+```
+
+To include CloneEval during the smoke evaluation pass:
+
+```bash
+bash scripts/runpod/run_aoede_pipeline.sh \
+  --profile smoke \
+  --cloneval-test-list /workspace/data/cloneval/cloneval_smoke.jsonl
+```
+
+The smoke run stages data, trains Aoede, runs the benchmark comparison, and
+prints the exact follow-up command for the later `core` run.
+
 ### Frontend
 
 ```bash

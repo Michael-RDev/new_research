@@ -15,7 +15,12 @@ from aoede.config import (
     ServiceConfig,
     TrainingConfig,
 )
-from aoede.languages import experimental_languages, production_languages
+from aoede.languages import (
+    experimental_languages,
+    language_index,
+    normalize_language,
+    production_languages,
+)
 from aoede.model.core import AoedeModel
 from aoede.text.tokenizer import UnicodeTokenizer
 
@@ -33,47 +38,6 @@ def app_config_from_dict(payload: dict) -> AppConfig:
             }
         ),
     )
-
-
-def normalize_language(value: Optional[str]) -> str:
-    if value is None:
-        return "en"
-
-    raw = str(value).strip()
-    if not raw or raw.lower() == "none":
-        return "en"
-
-    lowered = raw.lower()
-    known = {
-        spec.code.lower(): spec.code
-        for spec in (*production_languages(), *experimental_languages())
-    }
-    known.update(
-        {
-            spec.name.lower(): spec.code
-            for spec in (*production_languages(), *experimental_languages())
-        }
-    )
-    if lowered in known:
-        return known[lowered]
-
-    prefix = lowered.split("-", 1)[0]
-    if prefix in known:
-        return known[prefix]
-    return prefix
-
-
-def language_index(language_code: str) -> int:
-    code = normalize_language(language_code)
-    index = {
-        spec.code: idx
-        for idx, spec in enumerate(
-            (*production_languages(), *experimental_languages()),
-            start=1,
-        )
-    }
-    return index.get(code, 0)
-
 
 def peak_rss_bytes() -> int:
     try:

@@ -4,6 +4,7 @@ import argparse
 import json
 import random
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -14,6 +15,7 @@ from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.config import AppConfig, ModelConfig, TrainingConfig
 from aoede.data.dataset import ManifestDataset, collate_training_examples
 from aoede.data.manifest import load_manifest, save_manifest
+from aoede.languages import normalize_language
 from aoede.loaders import initialize_aoede_from_omnivoice
 from aoede.model.core import AoedeModel
 from aoede.text.tokenizer import UnicodeTokenizer
@@ -58,7 +60,7 @@ def get_parser() -> argparse.ArgumentParser:
 def _round_robin_subset(entries, max_samples: int, seed: int):
     by_language = defaultdict(list)
     for item in entries:
-        by_language[item.language_code].append(item)
+        by_language[normalize_language(item.language_code)].append(item)
 
     rng = random.Random(seed)
     languages = sorted(by_language.keys())
@@ -98,6 +100,17 @@ def _load_or_fit_tokenizer(
     tokenizer = UnicodeTokenizer()
     tokenizer.fit((entry.text for entry in entries), (entry.language_code for entry in entries))
     return tokenizer
+
+
+def _normalize_entries(entries):
+    normalized_entries = []
+    for entry in entries:
+        language_code = normalize_language(entry.language_code)
+        if language_code == entry.language_code:
+            normalized_entries.append(entry)
+            continue
+        normalized_entries.append(replace(entry, language_code=language_code))
+    return normalized_entries
 
 
 def _save_tokenizer(
@@ -161,7 +174,7 @@ def main() -> None:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    source_entries = load_manifest(source_manifest)
+    source_entries = _normalize_entries(load_manifest(source_manifest))
     tokenizer_path = (repo_root / args.tokenizer_path).resolve() if args.tokenizer_path else None
     tokenizer = _load_or_fit_tokenizer(repo_root, source_entries, tokenizer_path)
     filtered_entries, filter_stats = filter_trainable_entries(
@@ -264,7 +277,7 @@ def main() -> None:
     language_counts = defaultdict(int)
     reference_count = 0
     for entry in filtered_entries:
-        language_counts[entry.language_code] += 1
+        language_counts[normalize_language(entry.language_code)] += 1
         if entry.speaker_ref:
             reference_count += 1
 

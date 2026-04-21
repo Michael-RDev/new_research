@@ -13,6 +13,7 @@ import numpy as np
 from aoede.audio.io import load_audio_bytes, resample_audio, save_audio_bytes
 from aoede.config import default_config
 from aoede.data.manifest import ManifestEntry, save_manifest
+from aoede.languages import canonical_language
 from aoede.text.tokenizer import UnicodeTokenizer
 
 
@@ -443,19 +444,23 @@ def _normalize_language_code(
     request: HFIngestRequest,
 ):
     if request.language_code:
-        return request.language_code
+        return canonical_language(request.language_code) or request.language_code
     raw_code = _pick_value_with_meta(row, meta, spec.locale_fields)
     if isinstance(raw_code, str):
-        normalized = COMMON_LANGUAGE_ALIASES.get(raw_code.lower(), raw_code.lower())
-        return spec.config_language_map.get(normalized, normalized)
+        normalized = canonical_language(raw_code)
+        if normalized is not None:
+            return normalized
+        mapped = spec.config_language_map.get(raw_code.lower())
+        if mapped is not None:
+            return canonical_language(mapped) or mapped
     config_name = request.config_name or spec.default_config
     if config_name:
-        config_key = config_name.lower()
-        if config_key in spec.config_language_map:
-            return spec.config_language_map[config_key]
-        if config_key in COMMON_LANGUAGE_ALIASES:
-            return COMMON_LANGUAGE_ALIASES[config_key]
-    return request.language_code or spec.default_language_code or "und"
+        mapped = spec.config_language_map.get(config_name.lower(), config_name)
+        normalized = canonical_language(mapped)
+        if normalized is not None:
+            return normalized
+    fallback = request.language_code or spec.default_language_code or "und"
+    return canonical_language(fallback) or fallback
 
 
 def _coerce_audio_array(audio_value: Any):

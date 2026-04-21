@@ -140,6 +140,55 @@ def test_materialize_emilia_dataset_rows_from_json_metadata_and_mp3_bytes(tmp_pa
     assert Path(prepared.entries[0].audio_path).exists()
 
 
+def test_materialize_fleurs_rows_canonicalizes_language_names(tmp_path: Path):
+    request = HFIngestRequest(source_id="fleurs", split="train", config_name="en_us", max_examples=1)
+    spec = supported_hf_datasets()["fleurs"]
+    rows = [
+        {
+            "id": "fleurs-en-001",
+            "language": "English",
+            "audio": {"array": np.zeros(16_000, dtype=np.float32), "sampling_rate": 16_000},
+            "transcription": "hello from fleurs",
+        }
+    ]
+
+    prepared = materialize_rows_to_manifest(
+        rows=rows,
+        request=request,
+        spec=spec,
+        audio_root=tmp_path / "audio",
+        manifest_path=tmp_path / "train.jsonl",
+        sample_rate=24_000,
+    )
+
+    assert len(prepared.entries) == 1
+    assert prepared.entries[0].language_code == "en"
+
+
+def test_materialize_fleurs_rows_uses_config_name_when_language_is_missing(tmp_path: Path):
+    request = HFIngestRequest(source_id="fleurs", split="train", config_name="hi_in", max_examples=1)
+    spec = supported_hf_datasets()["fleurs"]
+    rows = [
+        {
+            "id": "fleurs-hi-001",
+            "audio": {"array": np.zeros(16_000, dtype=np.float32), "sampling_rate": 16_000},
+            "transcription": "namaste from fleurs",
+        }
+    ]
+
+    prepared = materialize_rows_to_manifest(
+        rows=rows,
+        request=request,
+        spec=spec,
+        audio_root=tmp_path / "audio",
+        manifest_path=tmp_path / "train.jsonl",
+        sample_rate=24_000,
+    )
+
+    assert len(prepared.entries) == 1
+    assert prepared.entries[0].language_code == "hi"
+
+
 def test_prepare_training_assets_writes_combined_manifests_and_summary(tmp_path: Path, monkeypatch):
     def fake_prepare_hf_source(request, manifest_dir, audio_root, sample_rate=24_000):
         spec = supported_hf_datasets()[request.source_id]

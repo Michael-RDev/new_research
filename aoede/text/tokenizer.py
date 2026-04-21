@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-from aoede.languages import LANGUAGE_REGISTRY, language_token
+from aoede.languages import LANGUAGE_REGISTRY, language_token, normalize_language
 from aoede.text.normalization import normalize_text
 
 
@@ -40,8 +40,9 @@ class UnicodeTokenizer:
 
     def fit(self, texts: Iterable[str], language_codes: Iterable[str]):
         for text, language_code in zip(texts, language_codes):
-            normalized = normalize_text(text, language_code)
-            self._ensure_token(language_token(language_code))
+            resolved_language = normalize_language(language_code)
+            normalized = normalize_text(text, resolved_language)
+            self._ensure_token(language_token(resolved_language))
             for char in normalized:
                 self._ensure_token(char)
 
@@ -53,8 +54,9 @@ class UnicodeTokenizer:
         return self.token_to_id[token]
 
     def encode(self, text: str, language_code: str):
-        normalized = normalize_text(text, language_code)
-        lang_tok = language_token(language_code)
+        resolved_language = normalize_language(language_code)
+        normalized = normalize_text(text, resolved_language)
+        lang_tok = language_token(resolved_language)
         self._ensure_token(lang_tok)
         ids = [self.token_to_id["<bos>"], self.token_to_id[lang_tok]]
         for char in normalized:
