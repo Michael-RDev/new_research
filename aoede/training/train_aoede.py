@@ -34,6 +34,12 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-manifest", type=Path, default=Path("artifacts/manifests/train.jsonl"))
     parser.add_argument("--output-root", type=Path, default=Path("artifacts/experiments/aoede_stage1"))
     parser.add_argument("--tokenizer-path", type=Path, default=None)
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help="Optional checkpoint path to resume optimizer/model state from.",
+    )
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=2000)
@@ -169,6 +175,12 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     source_manifest = (repo_root / args.source_manifest).resolve()
     output_root = (repo_root / args.output_root).resolve()
+    resume_path = None
+    if args.resume_from is not None:
+        resume_path = args.resume_from
+        if not resume_path.is_absolute():
+            resume_path = repo_root / resume_path
+        resume_path = resume_path.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
     random.seed(args.seed)
@@ -247,17 +259,25 @@ def main() -> None:
 
     model = AoedeModel(config.model)
     transfer_report = None
-    if args.init_from_omnivoice:
+    if resume_path is None and args.init_from_omnivoice:
         transfer_report = initialize_aoede_from_omnivoice(model, args.init_from_omnivoice)
 
     trainer = Trainer(model, config, device=args.device)
+    initial_step = 0
+    if resume_path is not None:
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        trainer.load_checkpoint(resume_path)
+        initial_step = trainer.step
+        print(f"resumed checkpoint={resume_path} step={trainer.step}", flush=True)
 
     steps = 0
     history = []
+    steps = trainer.step
     while steps < args.max_steps:
         for batch in loader:
             metrics = trainer.train_step(batch)
-            steps += 1
+            steps = trainer.step
             history.append({"step": steps, **metrics})
             print(
                 "step={step} loss={loss:.4f} flow={flow_loss:.4f} duration={duration_loss:.4f} "
@@ -294,10 +314,12 @@ def main() -> None:
         "cache_dir": str(cache_dir),
         "device": args.device,
         "source_entry_count": len(source_entries),
+        "initial_step": initial_step,
         "max_samples": len(filtered_entries),
         "max_steps": args.max_steps,
         "batch_size": args.batch_size,
         "architecture_variant": args.architecture_variant,
+        "resume_from": str(resume_path) if resume_path else None,
         "languages": dict(sorted(language_counts.items())),
         "samples_with_speaker_ref": reference_count,
         "tokenizer_path": str(resolved_tokenizer_path),
