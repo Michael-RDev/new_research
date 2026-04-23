@@ -22,6 +22,11 @@ from aoede.text.tokenizer import UnicodeTokenizer
 from aoede.training.filtering import filter_trainable_entries
 from aoede.training.trainer import Trainer
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - optional dependency fallback
+    tqdm = None
+
 
 DEFAULT_MAX_TEXT_TOKENS = 512
 DEFAULT_MAX_LATENT_FRAMES = 1600
@@ -205,6 +210,13 @@ def _format_metrics(step: int, metrics: dict[str, float]) -> str:
     return " ".join(pieces)
 
 
+def _emit_progress_message(message: str) -> None:
+    if tqdm is not None:
+        tqdm.write(message)
+    else:
+        print(message, flush=True)
+
+
 def main() -> None:
     args = get_parser().parse_args()
 
@@ -346,41 +358,63 @@ def main() -> None:
             raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
         trainer.load_checkpoint(resume_path)
         initial_step = trainer.step
-        print(f"resumed checkpoint={resume_path} step={trainer.step}", flush=True)
+        _emit_progress_message(f"resumed checkpoint={resume_path} step={trainer.step}")
 
     steps = 0
     history = []
     steps = trainer.step
-    while steps < args.max_steps:
-        for batch in loader:
-            metrics = trainer.train_step(batch)
-            steps = trainer.step
-            history.append({"step": steps, **metrics})
-            print(_format_metrics(steps, metrics), flush=True)
-            if (
-                eval_loader is not None
-                and config.training.eval_every > 0
-                and steps % config.training.eval_every == 0
-            ):
-                eval_metrics = trainer.evaluate(eval_loader)
-                history[-1]["eval"] = eval_metrics
-                print(
-                    "eval "
-                    + " ".join(
-                        f"{key}={value:.4f}"
-                        for key, value in sorted(eval_metrics.items())
-                    ),
-                    flush=True,
-                )
-            if steps % args.checkpoint_every == 0:
-                checkpoint_path = output_root / "artifacts" / "checkpoints" / f"step_{steps:07d}.pt"
-                trainer.save_checkpoint(checkpoint_path)
-                (output_root / "artifacts" / "checkpoints" / "checkpoint-last.pt").write_bytes(
-                    checkpoint_path.read_bytes()
-                )
-                print(f"saved {checkpoint_path}", flush=True)
-            if steps >= args.max_steps:
-                break
+    train_progress = None
+    if tqdm is not None:
+        train_progress = tqdm(
+            total=args.max_steps,
+            initial=trainer.step,
+            desc="train",
+            unit="step",
+            dynamic_ncols=True,
+        )
+    try:
+        while steps < args.max_steps:
+            for batch in loader:
+                metrics = trainer.train_step(batch)
+                steps = trainer.step
+                history.append({"step": steps, **metrics})
+                if train_progress is not None:
+                    train_progress.update(1)
+                    train_progress.set_postfix(
+                        loss=f"{metrics.get('loss', 0.0):.4f}",
+                        flow=f"{metrics.get('flow_loss', 0.0):.4f}",
+                        semantic=f"{metrics.get('semantic_loss', 0.0):.4f}",
+                        speaker=f"{metrics.get('speaker_loss', 0.0):.4f}",
+                    )
+                elif steps % max(config.training.log_every, 1) == 0:
+                    print(_format_metrics(steps, metrics), flush=True)
+
+                if (
+                    eval_loader is not None
+                    and config.training.eval_every > 0
+                    and steps % config.training.eval_every == 0
+                ):
+                    eval_metrics = trainer.evaluate(eval_loader)
+                    history[-1]["eval"] = eval_metrics
+                    _emit_progress_message(
+                        "eval "
+                        + " ".join(
+                            f"{key}={value:.4f}"
+                            for key, value in sorted(eval_metrics.items())
+                        )
+                    )
+                if steps % args.checkpoint_every == 0:
+                    checkpoint_path = output_root / "artifacts" / "checkpoints" / f"step_{steps:07d}.pt"
+                    trainer.save_checkpoint(checkpoint_path)
+                    (output_root / "artifacts" / "checkpoints" / "checkpoint-last.pt").write_bytes(
+                        checkpoint_path.read_bytes()
+                    )
+                    _emit_progress_message(f"saved {checkpoint_path}")
+                if steps >= args.max_steps:
+                    break
+    finally:
+        if train_progress is not None:
+            train_progress.close()
 
     final_checkpoint = output_root / "artifacts" / "checkpoints" / "checkpoint-last.pt"
     trainer.save_checkpoint(final_checkpoint)

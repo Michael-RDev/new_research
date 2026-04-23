@@ -56,6 +56,7 @@ fi
 
 cd "${ROOT_REPO_DIR}"
 export PYTHONPATH="${ROOT_REPO_DIR}:${ROOT_REPO_DIR}/OmniVoice:${PYTHONPATH:-}"
+mkdir -p "${OUTPUT_ROOT}"
 
 echo "Stage Hugging Face data for ${ARCHITECTURE_VARIANT} (${PROFILE})"
 "${PYTHON_BIN}" -m aoede.data.huggingface \

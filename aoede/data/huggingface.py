@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -15,6 +16,11 @@ from aoede.config import default_config
 from aoede.data.manifest import ManifestEntry, save_manifest
 from aoede.languages import canonical_language
 from aoede.text.tokenizer import UnicodeTokenizer
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - optional dependency fallback
+    tqdm = None
 
 
 COMMON_LANGUAGE_ALIASES = {
@@ -100,6 +106,7 @@ class PreparedSource:
     manifest_path: Path
     entries: list[ManifestEntry]
     skipped_rows: int = 0
+    elapsed_s: float = 0.0
 
     def to_dict(self):
         return {
@@ -111,6 +118,7 @@ class PreparedSource:
             "streaming": self.request.streaming,
             "entry_count": len(self.entries),
             "skipped_rows": self.skipped_rows,
+            "elapsed_s": round(self.elapsed_s, 3),
             "manifest_path": str(self.manifest_path),
             "gated": self.spec.gated,
             "non_commercial": self.spec.non_commercial,
@@ -606,16 +614,29 @@ def materialize_rows_to_manifest(
     entries: list[ManifestEntry] = []
     speaker_groups: dict[str, list[int]] = {}
     skipped_rows = 0
+    started_at = time.perf_counter()
+    progress = None
+    if tqdm is not None:
+        progress = tqdm(
+            desc=source_slug,
+            unit="row",
+            dynamic_ncols=True,
+            leave=False,
+        )
 
-    for row_index, row in enumerate(rows):
+    for row_index, row in enumerate(rows, start=1):
+        if progress is not None:
+            progress.update(1)
         meta = _coerce_json_metadata(row)
         _, audio_value = _pick_audio_value(row, spec)
         text_value = _pick_value_with_meta(row, meta, spec.text_fields)
         if audio_value is None or text_value is None:
             skipped_rows += 1
+            if progress is not None and row_index % 25 == 0:
+                progress.set_postfix(kept=len(entries), skipped=skipped_rows)
             continue
 
-        row_id = _row_id(spec, row, meta, row_index)
+        row_id = _row_id(spec, row, meta, row_index - 1)
         digest = hashlib.sha1(f"{source_slug}:{row_id}".encode("utf-8")).hexdigest()[
             :12
         ]
@@ -628,16 +649,22 @@ def materialize_rows_to_manifest(
             )
         except Exception:
             skipped_rows += 1
+            if progress is not None and row_index % 25 == 0:
+                progress.set_postfix(kept=len(entries), skipped=skipped_rows)
             continue
 
         duration_s = _duration_seconds(row, meta, waveform, sample_rate, spec)
         if duration_s < request.min_duration_s:
             skipped_rows += 1
             output_path.unlink(missing_ok=True)
+            if progress is not None and row_index % 25 == 0:
+                progress.set_postfix(kept=len(entries), skipped=skipped_rows)
             continue
         if request.max_duration_s is not None and duration_s > request.max_duration_s:
             skipped_rows += 1
             output_path.unlink(missing_ok=True)
+            if progress is not None and row_index % 25 == 0:
+                progress.set_postfix(kept=len(entries), skipped=skipped_rows)
             continue
 
         language_code = _normalize_language_code(spec, row, meta, request)
@@ -672,6 +699,8 @@ def materialize_rows_to_manifest(
         )
         if speaker_key is not None:
             speaker_groups.setdefault(speaker_key, []).append(len(entries) - 1)
+        if progress is not None and row_index % 10 == 0:
+            progress.set_postfix(kept=len(entries), skipped=skipped_rows)
         if request.max_examples is not None and len(entries) >= request.max_examples:
             break
 
@@ -684,12 +713,17 @@ def materialize_rows_to_manifest(
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     save_manifest(entries, manifest_path)
+    elapsed_s = time.perf_counter() - started_at
+    if progress is not None:
+        progress.set_postfix(kept=len(entries), skipped=skipped_rows)
+        progress.close()
     return PreparedSource(
         request=request,
         spec=spec,
         manifest_path=manifest_path,
         entries=entries,
         skipped_rows=skipped_rows,
+        elapsed_s=elapsed_s,
     )
 
 
@@ -756,11 +790,25 @@ def prepare_atlasflow_training_assets(
     failures: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     total = len(requests)
+    source_progress = None
+    if tqdm is not None:
+        source_progress = tqdm(
+            total=total,
+            desc="hf sources",
+            unit="source",
+            dynamic_ncols=True,
+        )
     for index, request in enumerate(requests, start=1):
+        request_started_at = time.perf_counter()
         print(
             f"[{index}/{total}] START source={request.source_id} config={request.config_name} split={request.split}",
             flush=True,
         )
+        if source_progress is not None:
+            source_progress.set_postfix(
+                source=request.source_id,
+                split=request.split,
+            )
         spec = HF_DATASET_SPECS[request.source_id]
         try:
             prepared_source = prepare_hf_source(
@@ -780,9 +828,12 @@ def prepare_atlasflow_training_assets(
             }
             failures.append(failure)
             print(
-                f"[{index}/{total}] FAIL {failure['error_type']}: {failure['error']}",
+                f"[{index}/{total}] FAIL {failure['error_type']}: {failure['error']} "
+                f"elapsed={time.perf_counter() - request_started_at:.1f}s",
                 flush=True,
             )
+            if source_progress is not None:
+                source_progress.update(1)
             continue
 
         prepared.append(prepared_source)
@@ -799,14 +850,21 @@ def prepare_atlasflow_training_assets(
             }
             warnings.append(warning)
             print(
-                f"[{index}/{total}] WARN empty_source skipped={prepared_source.skipped_rows} manifest={prepared_source.manifest_path}",
+                f"[{index}/{total}] WARN empty_source skipped={prepared_source.skipped_rows} "
+                f"elapsed={prepared_source.elapsed_s:.1f}s manifest={prepared_source.manifest_path}",
                 flush=True,
             )
         else:
             print(
-                f"[{index}/{total}] DONE entries={len(prepared_source.entries)} skipped={prepared_source.skipped_rows} manifest={prepared_source.manifest_path}",
+                f"[{index}/{total}] DONE entries={len(prepared_source.entries)} skipped={prepared_source.skipped_rows} "
+                f"elapsed={prepared_source.elapsed_s:.1f}s manifest={prepared_source.manifest_path}",
                 flush=True,
             )
+        if source_progress is not None:
+            source_progress.update(1)
+
+    if source_progress is not None:
+        source_progress.close()
 
     train_sources = [item for item in prepared if item.request.split == "train"]
     eval_sources = [item for item in prepared if item.request.split != "train"]
