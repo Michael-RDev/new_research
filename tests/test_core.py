@@ -80,4 +80,4 @@ def test_default_config_creates_artifact_directories(tmp_path: Path, monkeypatch
     assert config.resolve(config.artifacts.voices_dir).exists()
     assert config.resolve(config.artifacts.checkpoints_dir).exists()
     assert config.resolve(config.artifacts.datasets_dir).exists()
-    assert config.model.architecture_variant == "baseline"
+    assert config.model.architecture_variant == "mosaicflow"

@@ -51,8 +51,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--architecture-variant",
         type=str,
-        default="atlasflow",
-        choices=["baseline", "atlasflow"],
+        default="mosaicflow",
+        choices=["baseline", "atlasflow", "mosaicflow"],
     )
     parser.add_argument(
         "--init-from-omnivoice",
@@ -134,13 +134,17 @@ def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: Unicod
         project_root=output_root,
         model=ModelConfig(
             vocab_size=tokenizer.size,
-            d_model=384,
-            n_heads=6,
-            n_text_layers=10,
-            n_decoder_layers=10,
-            style_dim=32,
+            d_model=512,
+            n_heads=8,
+            n_text_layers=8,
+            n_decoder_layers=8,
+            semantic_layers=4,
+            style_dim=64,
             speaker_dim=192,
             codec_latent_dim=128,
+            semantic_dim=96,
+            semantic_stride=4,
+            prompt_token_count=8,
             max_text_tokens=DEFAULT_MAX_TEXT_TOKENS,
             max_latent_frames=DEFAULT_MAX_LATENT_FRAMES,
             duration_predictor_layers=4,
@@ -153,6 +157,9 @@ def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: Unicod
             memory_dropout=0.1,
             planner_loss_weight=0.1,
             memory_speaker_loss_weight=0.1,
+            semantic_loss_weight=0.2,
+            prompt_loss_weight=0.1,
+            coverage_loss_weight=0.05,
         ),
         training=TrainingConfig(
             batch_size=args.batch_size,
@@ -167,6 +174,35 @@ def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: Unicod
     )
     config.ensure_directories()
     return config
+
+
+def _format_metrics(step: int, metrics: dict[str, float]) -> str:
+    pieces = [f"step={step}"]
+    label_map = {
+        "loss": "loss",
+        "flow_loss": "flow",
+        "semantic_loss": "semantic",
+        "duration_loss": "duration",
+        "speaker_loss": "speaker",
+        "prompt_loss": "prompt",
+        "coverage_loss": "coverage",
+        "planner_loss": "planner",
+        "grad_norm": "grad",
+    }
+    for key in (
+        "loss",
+        "flow_loss",
+        "semantic_loss",
+        "duration_loss",
+        "speaker_loss",
+        "prompt_loss",
+        "coverage_loss",
+        "planner_loss",
+        "grad_norm",
+    ):
+        if key in metrics:
+            pieces.append(f"{label_map[key]}={metrics[key]:.4f}")
+    return " ".join(pieces)
 
 
 def main() -> None:
@@ -256,11 +292,52 @@ def main() -> None:
         num_workers=0,
         collate_fn=collate_training_examples,
     )
+    eval_loader = None
+    eval_manifest = repo_root / "artifacts" / "manifests" / "eval.jsonl"
+    if eval_manifest.exists():
+        eval_entries = _normalize_entries(load_manifest(eval_manifest))
+        eval_entries, _ = filter_trainable_entries(
+            eval_entries,
+            tokenizer,
+            max_text_tokens=DEFAULT_MAX_TEXT_TOKENS,
+            max_latent_frames=DEFAULT_MAX_LATENT_FRAMES,
+            codec_hop_length=DEFAULT_CODEC_HOP_LENGTH,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+            validate_audio_paths=True,
+        )
+        if eval_entries:
+            eval_dataset = ManifestDataset(
+                eval_entries,
+                tokenizer=tokenizer,
+                codec=codec,
+                speaker_encoder=FrozenSpeakerEncoder(
+                    embedding_dim=config.model.speaker_dim
+                ),
+                cache_dir=cache_dir,
+                planner_stride=config.model.planner_stride,
+                planner_dim=config.model.planner_dim,
+            )
+            eval_loader = DataLoader(
+                eval_dataset,
+                batch_size=config.training.batch_size,
+                shuffle=False,
+                num_workers=0,
+                collate_fn=collate_training_examples,
+            )
 
     model = AoedeModel(config.model)
     transfer_report = None
     if resume_path is None and args.init_from_omnivoice:
-        transfer_report = initialize_aoede_from_omnivoice(model, args.init_from_omnivoice)
+        if args.architecture_variant == "mosaicflow":
+            print(
+                "Skipping OmniVoice warm-start because mosaicflow does not share the legacy Aoede parameter layout.",
+                flush=True,
+            )
+        else:
+            transfer_report = initialize_aoede_from_omnivoice(
+                model,
+                args.init_from_omnivoice,
+            )
 
     trainer = Trainer(model, config, device=args.device)
     initial_step = 0
@@ -279,13 +356,22 @@ def main() -> None:
             metrics = trainer.train_step(batch)
             steps = trainer.step
             history.append({"step": steps, **metrics})
-            print(
-                "step={step} loss={loss:.4f} flow={flow_loss:.4f} duration={duration_loss:.4f} "
-                "speaker={speaker_loss:.4f} planner={planner_loss:.4f} grad={grad_norm:.4f}".format(
-                    **history[-1]
-                ),
-                flush=True,
-            )
+            print(_format_metrics(steps, metrics), flush=True)
+            if (
+                eval_loader is not None
+                and config.training.eval_every > 0
+                and steps % config.training.eval_every == 0
+            ):
+                eval_metrics = trainer.evaluate(eval_loader)
+                history[-1]["eval"] = eval_metrics
+                print(
+                    "eval "
+                    + " ".join(
+                        f"{key}={value:.4f}"
+                        for key, value in sorted(eval_metrics.items())
+                    ),
+                    flush=True,
+                )
             if steps % args.checkpoint_every == 0:
                 checkpoint_path = output_root / "artifacts" / "checkpoints" / f"step_{steps:07d}.pt"
                 trainer.save_checkpoint(checkpoint_path)
@@ -322,6 +408,7 @@ def main() -> None:
         "resume_from": str(resume_path) if resume_path else None,
         "languages": dict(sorted(language_counts.items())),
         "samples_with_speaker_ref": reference_count,
+        "eval_manifest": str(eval_manifest) if eval_loader is not None else None,
         "tokenizer_path": str(resolved_tokenizer_path),
         "filter_stats": filter_stats.to_dict(),
         "omnivoice_init": args.init_from_omnivoice,

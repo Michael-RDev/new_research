@@ -211,6 +211,7 @@ def atlasflow_default_requests(
     max_train_examples: Optional[int] = 20_000,
     max_eval_examples: Optional[int] = 512,
     max_duration_s: Optional[float] = ATLASFLOW_MAX_AUDIO_DURATION_S,
+    include_gated: bool = False,
 ):
     requests = [
         HFIngestRequest(
@@ -229,26 +230,14 @@ def atlasflow_default_requests(
             "peoples_speech",
             split="train",
             config_name="clean",
-            max_examples=max_train_examples,
+            max_examples=normalize_limit(max_train_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "peoples_speech",
             split="validation",
             config_name="clean",
-            max_examples=max_eval_examples,
-            max_duration_s=max_duration_s,
-        ),
-        HFIngestRequest(
-            "emilia_nv",
-            split="train",
-            max_examples=max_train_examples,
-            max_duration_s=max_duration_s,
-        ),
-        HFIngestRequest(
-            "emilia_dataset",
-            split="train",
-            max_examples=max_train_examples,
+            max_examples=normalize_limit(max_eval_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
@@ -310,43 +299,57 @@ def atlasflow_default_requests(
         HFIngestRequest(
             "mls",
             split="train",
+            config_name="english",
+            max_examples=normalize_limit(max_train_examples),
+            max_duration_s=max_duration_s,
+        ),
+        HFIngestRequest(
+            "mls",
+            split="validation",
+            config_name="english",
+            max_examples=normalize_limit(max_eval_examples),
+            max_duration_s=max_duration_s,
+        ),
+        HFIngestRequest(
+            "mls",
+            split="train",
             config_name="spanish",
-            max_examples=max_train_examples,
+            max_examples=normalize_limit(max_train_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="spanish",
-            max_examples=max_eval_examples,
+            max_examples=normalize_limit(max_eval_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="train",
             config_name="french",
-            max_examples=max_train_examples,
+            max_examples=normalize_limit(max_train_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="french",
-            max_examples=max_eval_examples,
+            max_examples=normalize_limit(max_eval_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="train",
             config_name="german",
-            max_examples=max_train_examples,
+            max_examples=normalize_limit(max_train_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
             "mls",
             split="validation",
             config_name="german",
-            max_examples=max_eval_examples,
+            max_examples=normalize_limit(max_eval_examples),
             max_duration_s=max_duration_s,
         ),
         HFIngestRequest(
@@ -362,13 +365,36 @@ def atlasflow_default_requests(
             max_duration_s=max_duration_s,
         ),
     ]
+    if include_gated:
+        requests.extend(
+            [
+                HFIngestRequest(
+                    "emilia_nv",
+                    split="train",
+                    max_examples=normalize_limit(max_train_examples),
+                    max_duration_s=max_duration_s,
+                ),
+                HFIngestRequest(
+                    "emilia_dataset",
+                    split="train",
+                    max_examples=normalize_limit(max_train_examples),
+                    max_duration_s=max_duration_s,
+                ),
+            ]
+        )
     return requests
 
 
 def min_or_none(value: Optional[int], upper_bound: int):
-    if value is None:
+    if value is None or value <= 0:
         return None
     return min(value, upper_bound)
+
+
+def normalize_limit(value: Optional[int]):
+    if value is None or value <= 0:
+        return None
+    return value
 
 
 def _pick_value(row: dict[str, Any], field_names: Sequence[str]):
@@ -888,6 +914,11 @@ def _cli(argv: Optional[Sequence[str]] = None):
         default=512,
         help="Default cap used by the built-in AtlasFlow mix for each eval source.",
     )
+    parser.add_argument(
+        "--include-gated",
+        action="store_true",
+        help="Include gated Emilia datasets in the default staging mix.",
+    )
     args = parser.parse_args(argv)
     project_root = args.project_root.resolve()
     _load_env_file(_resolve_env_file(args.env_file, project_root))
@@ -898,6 +929,7 @@ def _cli(argv: Optional[Sequence[str]] = None):
         requests = atlasflow_default_requests(
             max_train_examples=args.max_train_examples,
             max_eval_examples=args.max_eval_examples,
+            include_gated=args.include_gated,
         )
     summary = prepare_atlasflow_training_assets(
         project_root=project_root,

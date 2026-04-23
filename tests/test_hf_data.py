@@ -279,16 +279,39 @@ def test_prepare_training_assets_continues_with_failures_and_empty_sources(tmp_p
 def test_default_atlasflow_requests_cover_named_datasets():
     requests = atlasflow_default_requests(max_train_examples=100, max_eval_examples=10)
     keys = {request.source_id for request in requests}
-    assert {"waxalnlp", "peoples_speech", "emilia_nv", "emilia_dataset"}.issubset(keys)
+    assert {"waxalnlp", "peoples_speech", "fleurs", "mls", "parler_mls_eng_10k"}.issubset(keys)
+    assert "emilia_nv" not in keys
+    assert "emilia_dataset" not in keys
 
 
-def test_default_atlasflow_requests_drop_mls_english_and_cap_duration():
+def test_default_atlasflow_requests_include_mls_english_and_cap_duration():
     requests = atlasflow_default_requests(max_train_examples=100, max_eval_examples=10)
-    assert all(
-        not (request.source_id == "mls" and request.config_name == "english")
+    assert any(
+        request.source_id == "mls" and request.config_name == "english"
         for request in requests
     )
     assert all(request.max_duration_s == ATLASFLOW_MAX_AUDIO_DURATION_S for request in requests)
+
+
+def test_default_atlasflow_requests_can_opt_into_gated_sources():
+    requests = atlasflow_default_requests(
+        max_train_examples=100,
+        max_eval_examples=10,
+        include_gated=True,
+    )
+    keys = {request.source_id for request in requests}
+    assert "emilia_nv" in keys
+    assert "emilia_dataset" in keys
+
+
+def test_default_atlasflow_requests_treat_zero_limit_as_full_source():
+    requests = atlasflow_default_requests(max_train_examples=0, max_eval_examples=0)
+    peoples_train = next(
+        request
+        for request in requests
+        if request.source_id == "peoples_speech" and request.split == "train"
+    )
+    assert peoples_train.max_examples is None
 
 
 def test_iter_dataset_rows_enables_trust_remote_code_for_fleurs(monkeypatch):

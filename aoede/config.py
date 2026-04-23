@@ -13,6 +13,7 @@ class ModelConfig:
     n_heads: int = 6
     n_text_layers: int = 12
     n_decoder_layers: int = 12
+    semantic_layers: int = 4
     style_dim: int = 32
     speaker_dim: int = 192
     codec_latent_dim: int = 128
@@ -22,7 +23,10 @@ class ModelConfig:
     max_text_tokens: int = 512
     max_latent_frames: int = 1200
     duration_predictor_layers: int = 4
-    architecture_variant: str = "baseline"
+    architecture_variant: str = "mosaicflow"
+    semantic_dim: int = 96
+    semantic_stride: int = 4
+    prompt_token_count: int = 8
     speaker_memory_tokens: int = 8
     planner_stride: int = 4
     planner_dim: int = 128
@@ -31,6 +35,9 @@ class ModelConfig:
     memory_dropout: float = 0.1
     planner_loss_weight: float = 0.1
     memory_speaker_loss_weight: float = 0.1
+    semantic_loss_weight: float = 0.2
+    prompt_loss_weight: float = 0.1
+    coverage_loss_weight: float = 0.05
 
 
 @dataclass

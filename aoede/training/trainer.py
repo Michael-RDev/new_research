@@ -91,6 +91,44 @@ class Trainer:
         metrics["grad_norm"] = float(grad_norm.detach().cpu())
         return metrics
 
+    @torch.no_grad()
+    def evaluate(
+        self,
+        eval_loader: DataLoader,
+        max_batches: int = 8,
+    ):
+        self.model.eval()
+        aggregate: Dict[str, float] = {}
+        batches = 0
+        for batch in eval_loader:
+            tensor_batch = {
+                key: value.to(self.device) if isinstance(value, torch.Tensor) else value
+                for key, value in batch.items()
+            }
+            with self._autocast():
+                output = self.model(
+                    token_ids=tensor_batch["token_ids"],
+                    language_ids=tensor_batch["language_ids"],
+                    speaker_embedding=tensor_batch["speaker_ref"],
+                    target_latents=tensor_batch["codec_latents"],
+                    target_durations=tensor_batch["durations"],
+                    reference_latents=tensor_batch.get("reference_latents"),
+                    reference_mask=tensor_batch.get("reference_mask"),
+                    prosody_targets=tensor_batch.get("prosody_targets"),
+                    has_reference=tensor_batch.get("has_reference"),
+                )
+            for key, value in output.items():
+                aggregate[key] = aggregate.get(key, 0.0) + float(value.detach().cpu())
+            batches += 1
+            if batches >= max_batches:
+                break
+        if batches == 0:
+            return {}
+        return {
+            f"eval_{key}": value / batches
+            for key, value in sorted(aggregate.items())
+        }
+
     def run(
         self,
         train_loader: DataLoader,
@@ -103,6 +141,12 @@ class Trainer:
                 metrics = self.train_step(batch)
                 if self.step % self.config.training.checkpoint_every == 0:
                     self.save_checkpoint(self.config.resolve(self.config.artifacts.checkpoints_dir) / f"step_{self.step:07d}.pt")
+                if (
+                    eval_loader is not None
+                    and self.config.training.eval_every > 0
+                    and self.step % self.config.training.eval_every == 0
+                ):
+                    self.evaluate(eval_loader)
                 if self.step >= max_steps:
                     break
 

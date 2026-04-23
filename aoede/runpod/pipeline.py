@@ -46,6 +46,17 @@ PROFILE_DEFAULTS = {
         run_evals=False,
         prepare_eval_assets=False,
     ),
+    "full": ProfileDefaults(
+        output_root="exp/aoede_mosaicflow_full",
+        benchmark_output_dir="exp/benchmark_compare_aoede_mosaicflow_full",
+        max_train_examples=0,
+        max_eval_examples=256,
+        max_samples=0,
+        max_steps=100_000,
+        batch_size=8,
+        run_evals=False,
+        prepare_eval_assets=False,
+    ),
 }
 
 
@@ -265,8 +276,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--architecture-variant",
         type=str,
-        default="atlasflow",
-        choices=["baseline", "atlasflow"],
+        default="mosaicflow",
+        choices=["baseline", "atlasflow", "mosaicflow"],
         help="Aoede architecture variant.",
     )
     parser.add_argument(
@@ -444,7 +455,7 @@ def build_eval_command(paths: RunPodPaths, config: ResolvedPipelineConfig) -> Op
         "--candidate-model",
         str(config.checkpoint_path),
         "--candidate-label",
-        "Aoede",
+        "Aoede-MosaicFlow",
         "--candidate-infer-module",
         "aoede.eval.infer_batch",
         "--candidate-cloneval-module",

@@ -13,6 +13,16 @@ from aoede.model.atlasflow import (
     ContinuousProsodyPlanner,
     SpeakerMemoryEncoder,
 )
+from aoede.model.mosaicflow import (
+    OccupancyPredictor,
+    PromptFactorEncoder,
+    SemanticCanvasGenerator,
+    SemanticUpsampler,
+    align_sequence_length,
+    build_masked_semantic_input,
+    build_semantic_targets,
+    pool_sequence,
+)
 from aoede.model.modules import (
     ConditionedTransformerBlock,
     DiTBlock,
@@ -261,15 +271,35 @@ class AoedeModel(nn.Module):
             hop_length=config.codec_hop_length,
         )
         self.text_encoder = TextEncoder(config)
-        self.duration_predictor = DurationPredictor(config)
-        self.style_encoder = StyleEncoder(config)
         self.decoder = FlowMatchingDecoder(config)
         self.speaker_head = nn.Linear(config.d_model, config.speaker_dim)
-        self.memory_speaker_head = nn.Sequential(
-            nn.LayerNorm(config.d_model),
-            nn.Linear(config.d_model, config.d_model),
-        )
-        if self._atlasflow_enabled:
+        if self._mosaicflow_enabled:
+            self.duration_predictor = OccupancyPredictor(config)
+            self.style_encoder = None
+            self.memory_speaker_head = nn.Identity()
+            self.prompt_factor_encoder = PromptFactorEncoder(config)
+            self.semantic_generator = SemanticCanvasGenerator(config)
+            self.semantic_upsampler = SemanticUpsampler(config)
+            self.prosody_head = nn.Sequential(
+                nn.LayerNorm(config.d_model),
+                nn.Linear(config.d_model, config.planner_dim),
+            )
+            self.speaker_memory_encoder = None
+            self.prosody_planner = None
+            self.atlas_composer = None
+        else:
+            self.duration_predictor = DurationPredictor(config)
+            self.style_encoder = StyleEncoder(config)
+            self.memory_speaker_head = nn.Sequential(
+                nn.LayerNorm(config.d_model),
+                nn.Linear(config.d_model, config.d_model),
+            )
+            self.prompt_factor_encoder = None
+            self.semantic_generator = None
+            self.semantic_upsampler = None
+            self.prosody_head = None
+
+        if self.config.architecture_variant == "atlasflow":
             self.speaker_memory_encoder = SpeakerMemoryEncoder(
                 latent_dim=config.codec_latent_dim,
                 hidden_size=config.d_model,
@@ -299,7 +329,11 @@ class AoedeModel(nn.Module):
 
     @property
     def _atlasflow_enabled(self):
-        return self.config.architecture_variant == "atlasflow"
+        return self.config.architecture_variant in {"atlasflow", "mosaicflow"}
+
+    @property
+    def _mosaicflow_enabled(self):
+        return self.config.architecture_variant == "mosaicflow"
 
     def align_frame_states(self, frame_states: torch.Tensor, frame_count: int):
         if frame_states.shape[1] > frame_count:
@@ -314,6 +348,14 @@ class AoedeModel(nn.Module):
         reference_latents: torch.Tensor,
         reference_mask: Optional[torch.Tensor] = None,
     ):
+        if self._mosaicflow_enabled:
+            assert self.prompt_factor_encoder is not None
+            style_latent, _, _, _ = self.prompt_factor_encoder(
+                reference_latents,
+                reference_mask,
+            )
+            return style_latent
+        assert self.style_encoder is not None
         return self.style_encoder(reference_latents, mask=reference_mask)
 
     def infer_reference_memory(
@@ -321,9 +363,151 @@ class AoedeModel(nn.Module):
         reference_latents: torch.Tensor,
         reference_mask: Optional[torch.Tensor] = None,
     ):
+        if self._mosaicflow_enabled:
+            assert self.prompt_factor_encoder is not None
+            _, prompt_tokens, prompt_summary, valid = self.prompt_factor_encoder(
+                reference_latents,
+                reference_mask,
+            )
+            return prompt_tokens, prompt_summary, valid
         if not self._atlasflow_enabled or self.speaker_memory_encoder is None:
             return None, None, None
         return self.speaker_memory_encoder(reference_latents, reference_mask)
+
+    def _default_reference_mask(self, reference_latents: torch.Tensor) -> torch.Tensor:
+        return torch.ones(
+            reference_latents.shape[0],
+            reference_latents.shape[1],
+            dtype=torch.bool,
+            device=reference_latents.device,
+        )
+
+    def _semantic_alignment_targets(
+        self,
+        text_length: int,
+        target_latents: torch.Tensor,
+        target_durations: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if target_durations is not None:
+            return target_durations
+        total_frames = target_latents.shape[1]
+        return torch.full(
+            (target_latents.shape[0], text_length),
+            fill_value=max(total_frames // max(text_length, 1), 1),
+            dtype=torch.long,
+            device=target_latents.device,
+        )
+
+    def _mosaicflow_context(
+        self,
+        text_states: torch.Tensor,
+        language_ids: torch.Tensor,
+        speaker_embedding: torch.Tensor,
+        target_latents: torch.Tensor,
+        target_durations: Optional[torch.Tensor],
+        reference_latents: torch.Tensor,
+        reference_mask: torch.Tensor,
+        prosody_targets: Optional[torch.Tensor],
+        has_reference: Optional[torch.Tensor],
+    ):
+        assert self.prompt_factor_encoder is not None
+        assert self.semantic_generator is not None
+        assert self.semantic_upsampler is not None
+        assert self.prosody_head is not None
+
+        style_latent, prompt_tokens, prompt_summary, valid_reference = (
+            self.prompt_factor_encoder(reference_latents, reference_mask)
+        )
+        duration_prediction = self.duration_predictor(
+            text_states,
+            speaker_embedding,
+            style_latent,
+            language_ids,
+            prompt_summary,
+        )
+        target_durations = self._semantic_alignment_targets(
+            text_length=text_states.shape[1],
+            target_latents=target_latents,
+            target_durations=target_durations,
+        )
+        frame_states = length_regulate(text_states, target_durations)
+        frame_states = self.align_frame_states(frame_states, target_latents.shape[1])
+
+        semantic_canvas = pool_sequence(frame_states, self.config.semantic_stride)
+        semantic_targets = build_semantic_targets(
+            target_latents,
+            semantic_dim=self.config.semantic_dim,
+            semantic_stride=self.config.semantic_stride,
+        )
+        semantic_input, semantic_mask = build_masked_semantic_input(semantic_targets)
+        predicted_semantics = self.semantic_generator(
+            semantic_canvas,
+            semantic_input,
+            prompt_tokens,
+            prompt_summary,
+            language_ids,
+        )
+        semantic_frame_states = self.semantic_upsampler(
+            predicted_semantics,
+            prompt_tokens,
+            prompt_summary,
+            language_ids,
+            target_length=target_latents.shape[1],
+            residual_text=frame_states,
+        )
+
+        semantic_error = (predicted_semantics - semantic_targets).pow(2).mean(dim=-1)
+        semantic_loss = semantic_error[semantic_mask].mean()
+        if not torch.isfinite(semantic_loss):
+            semantic_loss = semantic_error.mean()
+
+        target_length = float(target_latents.shape[1])
+        coverage_loss = (
+            duration_prediction.sum(dim=1) - target_length
+        ).abs().mean() / max(target_length, 1.0)
+
+        speaker_prediction = self.speaker_head(semantic_frame_states.mean(dim=1))
+        speaker_loss = 1.0 - F.cosine_similarity(
+            speaker_prediction,
+            speaker_embedding,
+            dim=-1,
+        ).mean()
+
+        prompt_loss = semantic_loss.new_zeros(())
+        if prosody_targets is not None:
+            prompt_predictions = pool_sequence(
+                semantic_frame_states,
+                self.config.planner_stride,
+            )
+            prompt_predictions = self.prosody_head(prompt_predictions)
+            prompt_predictions = align_sequence_length(
+                prompt_predictions,
+                prosody_targets.shape[1],
+            )
+            prompt_loss = F.mse_loss(prompt_predictions, prosody_targets)
+
+        if has_reference is not None:
+            valid_reference = valid_reference & has_reference.to(
+                device=valid_reference.device,
+                dtype=torch.bool,
+            )
+
+        return {
+            "style_latent": style_latent,
+            "prompt_tokens": prompt_tokens,
+            "prompt_summary": prompt_summary,
+            "valid_reference": valid_reference,
+            "duration_prediction": duration_prediction,
+            "target_durations": target_durations,
+            "frame_states": frame_states,
+            "decoder_context": semantic_frame_states,
+            "predicted_semantics": predicted_semantics,
+            "semantic_targets": semantic_targets,
+            "semantic_loss": semantic_loss,
+            "speaker_loss": speaker_loss,
+            "prompt_loss": prompt_loss,
+            "coverage_loss": coverage_loss,
+        }
 
     def _atlasflow_context(
         self,
@@ -389,6 +573,56 @@ class AoedeModel(nn.Module):
         reference_latents = (
             reference_latents if reference_latents is not None else target_latents
         )
+        if reference_mask is None:
+            reference_mask = self._default_reference_mask(reference_latents)
+
+        if self._mosaicflow_enabled:
+            mosaic = self._mosaicflow_context(
+                text_states=text_states,
+                language_ids=language_ids,
+                speaker_embedding=speaker_embedding,
+                target_latents=target_latents,
+                target_durations=target_durations,
+                reference_latents=reference_latents,
+                reference_mask=reference_mask,
+                prosody_targets=prosody_targets,
+                has_reference=has_reference,
+            )
+            flow_loss = self.decoder.flow_loss(
+                mosaic["decoder_context"],
+                target_latents,
+                speaker_embedding,
+                mosaic["style_latent"],
+                language_ids,
+            )
+            duration_loss = F.l1_loss(
+                mosaic["duration_prediction"],
+                mosaic["target_durations"].float(),
+            )
+            style_reg = mosaic["style_latent"].pow(2).mean()
+            total_loss = (
+                flow_loss
+                + 0.1 * duration_loss
+                + 0.1 * mosaic["speaker_loss"]
+                + 0.01 * style_reg
+                + self.config.semantic_loss_weight * mosaic["semantic_loss"]
+                + self.config.prompt_loss_weight * mosaic["prompt_loss"]
+                + self.config.coverage_loss_weight * mosaic["coverage_loss"]
+            )
+            return {
+                "loss": total_loss,
+                "flow_loss": flow_loss,
+                "duration_loss": duration_loss,
+                "speaker_loss": mosaic["speaker_loss"],
+                "planner_loss": mosaic["prompt_loss"],
+                "memory_speaker_loss": mosaic["speaker_loss"],
+                "style_reg": style_reg,
+                "semantic_loss": mosaic["semantic_loss"],
+                "prompt_loss": mosaic["prompt_loss"],
+                "coverage_loss": mosaic["coverage_loss"],
+            }
+
+        assert self.style_encoder is not None
         style_latent = self.style_encoder(reference_latents, mask=reference_mask)
         duration_prediction = self.duration_predictor(
             text_states, speaker_embedding, style_latent, language_ids
@@ -402,14 +636,6 @@ class AoedeModel(nn.Module):
             )
         frame_states = length_regulate(text_states, target_durations)
         frame_states = self.align_frame_states(frame_states, target_latents.shape[1])
-
-        if reference_mask is None:
-            reference_mask = torch.ones(
-                reference_latents.shape[0],
-                reference_latents.shape[1],
-                dtype=torch.bool,
-                device=reference_latents.device,
-            )
 
         (
             composed_frame_states,
@@ -504,6 +730,76 @@ class AoedeModel(nn.Module):
         speaker_summary: Optional[torch.Tensor] = None,
     ):
         text_states = self.text_encoder(token_ids, language_ids)
+        if self._mosaicflow_enabled:
+            assert self.prompt_factor_encoder is not None
+            assert self.semantic_generator is not None
+            assert self.semantic_upsampler is not None
+            durations = self.duration_predictor(
+                text_states,
+                speaker_embedding,
+                style_latent,
+                language_ids,
+                (
+                    speaker_summary
+                    if speaker_summary is not None
+                    else text_states.mean(dim=1)
+                ),
+            )
+            frame_states = length_regulate(text_states, durations.clamp(1, 20))
+            frame_states = frame_states[:, : self.config.max_latent_frames]
+            if speaker_memory is None or speaker_summary is None:
+                null_memory, null_summary = self.prompt_factor_encoder.null_context(
+                    frame_states.shape[0],
+                    frame_states.device,
+                )
+                if speaker_memory is None:
+                    speaker_memory = null_memory
+                if speaker_summary is None:
+                    speaker_summary = null_summary
+            if speaker_memory.dim() == 2:
+                speaker_memory = speaker_memory.unsqueeze(0)
+            if speaker_summary.dim() == 1:
+                speaker_summary = speaker_summary.unsqueeze(0)
+
+            semantic_canvas = pool_sequence(frame_states, self.config.semantic_stride)
+            semantic_input = frame_states.new_zeros(
+                frame_states.shape[0],
+                semantic_canvas.shape[1],
+                self.config.semantic_dim,
+            )
+            predicted_semantics = self.semantic_generator(
+                semantic_canvas,
+                semantic_input,
+                speaker_memory,
+                speaker_summary,
+                language_ids,
+            )
+            predicted_semantics = self.semantic_generator(
+                semantic_canvas,
+                0.5 * predicted_semantics,
+                speaker_memory,
+                speaker_summary,
+                language_ids,
+            )
+            decoder_context = self.semantic_upsampler(
+                predicted_semantics,
+                speaker_memory,
+                speaker_summary,
+                language_ids,
+                target_length=frame_states.shape[1],
+                residual_text=frame_states,
+            )
+            latents = self.decoder.sample(
+                decoder_context,
+                speaker_embedding,
+                style_latent,
+                language_ids,
+                steps=sampling_steps,
+                latent_dim=self.config.codec_latent_dim,
+            )
+            waveform = self.codec.decode(latents)
+            return waveform, latents
+
         durations = self.duration_predictor(
             text_states, speaker_embedding, style_latent, language_ids
         )
