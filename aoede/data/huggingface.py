@@ -307,20 +307,6 @@ def atlasflow_default_requests(
         HFIngestRequest(
             "mls",
             split="train",
-            config_name="english",
-            max_examples=normalize_limit(max_train_examples),
-            max_duration_s=max_duration_s,
-        ),
-        HFIngestRequest(
-            "mls",
-            split="validation",
-            config_name="english",
-            max_examples=normalize_limit(max_eval_examples),
-            max_duration_s=max_duration_s,
-        ),
-        HFIngestRequest(
-            "mls",
-            split="train",
             config_name="spanish",
             max_examples=normalize_limit(max_train_examples),
             max_duration_s=max_duration_s,

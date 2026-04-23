@@ -59,11 +59,27 @@ export PYTHONPATH="${ROOT_REPO_DIR}:${ROOT_REPO_DIR}/OmniVoice:${PYTHONPATH:-}"
 mkdir -p "${OUTPUT_ROOT}"
 
 echo "Stage Hugging Face data for ${ARCHITECTURE_VARIANT} (${PROFILE})"
-"${PYTHON_BIN}" -m aoede.data.huggingface \
-  --project-root "${ROOT_REPO_DIR}" \
-  --env-file "${ENV_FILE}" \
-  --max-train-examples "${HF_MAX_TRAIN_EXAMPLES}" \
+stage_cmd=(
+  "${PYTHON_BIN}" -m aoede.data.huggingface
+  --project-root "${ROOT_REPO_DIR}"
+  --env-file "${ENV_FILE}"
+  --max-train-examples "${HF_MAX_TRAIN_EXAMPLES}"
   --max-eval-examples "${HF_MAX_EVAL_EXAMPLES}"
+)
+
+set +e
+"${stage_cmd[@]}"
+stage_status=$?
+set -e
+
+if [ "${stage_status}" -ne 0 ]; then
+  if [ -s "${MANIFEST_PATH}" ]; then
+    echo "Staging exited with status ${stage_status}, but ${MANIFEST_PATH} exists; continuing to training."
+  else
+    echo "Staging failed and ${MANIFEST_PATH} was not created."
+    exit "${stage_status}"
+  fi
+fi
 
 train_cmd=(
   "${PYTHON_BIN}" -m aoede.training.train_aoede

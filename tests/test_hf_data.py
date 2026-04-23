@@ -284,10 +284,14 @@ def test_default_atlasflow_requests_cover_named_datasets():
     assert "emilia_dataset" not in keys
 
 
-def test_default_atlasflow_requests_include_mls_english_and_cap_duration():
+def test_default_atlasflow_requests_skip_unavailable_mls_english_and_cap_duration():
     requests = atlasflow_default_requests(max_train_examples=100, max_eval_examples=10)
-    assert any(
+    assert not any(
         request.source_id == "mls" and request.config_name == "english"
+        for request in requests
+    )
+    assert any(
+        request.source_id == "mls" and request.config_name == "spanish"
         for request in requests
     )
     assert all(request.max_duration_s == ATLASFLOW_MAX_AUDIO_DURATION_S for request in requests)
