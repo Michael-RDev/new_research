@@ -28,7 +28,7 @@ mkdir -p "${WORKSPACE}"
 
 OMNIVOICE_BASE_COMMIT=""
 if [ -f "${OMNIVOICE_BASE_COMMIT_FILE}" ]; then
-  OMNIVOICE_BASE_COMMIT="$(tr -d '[:space:]' < "${OMNIVOICE_BASE_COMMIT_FILE}")"
+  OMNIVOICE_BASE_COMMIT="$(tr -d '[:space:]' <"${OMNIVOICE_BASE_COMMIT_FILE}")"
 fi
 
 ensure_omnivoice_checkout() {
@@ -65,7 +65,7 @@ apply_omnivoice_patch() {
     git -C "${OMNIVOICE_DIR}" apply --binary "${OMNIVOICE_PATCH_FILE}"
   fi
 
-  printf '%s\n' "${patch_sha}" > "${OMNIVOICE_PATCH_MARKER}"
+  printf '%s\n' "${patch_sha}" >"${OMNIVOICE_PATCH_MARKER}"
 }
 
 if [ ! -d "${ROOT_REPO_DIR}/.git" ]; then

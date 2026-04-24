@@ -77,7 +77,9 @@ class FrozenAudioCodec(nn.Module):
         frames = torch.einsum("btd,fd->btf", latents, self.synthesis_basis)
         total = (frames.shape[1] - 1) * self.hop_length + self.frame_size
         waveform = frames.new_zeros(frames.shape[0], total)
-        window = torch.hann_window(self.frame_size, device=frames.device).clamp_min(1e-3)
+        window = torch.hann_window(self.frame_size, device=frames.device).clamp_min(
+            1e-3
+        )
         window_sum = frames.new_zeros(total)
 
         for index in range(frames.shape[1]):
@@ -223,13 +225,19 @@ class DacAudioCodec(nn.Module):
         source_device = latents.device
         target_device = self._target_device(latents)
         model = self._load_model(target_device)
-        z = latents.to(device=target_device, dtype=torch.float32).transpose(1, 2).contiguous()
+        z = (
+            latents.to(device=target_device, dtype=torch.float32)
+            .transpose(1, 2)
+            .contiguous()
+        )
         with torch.no_grad():
             audio = model.decode(z)
         if audio.dim() == 3:
             audio = audio.squeeze(1)
         if audio.dim() != 2:
-            raise ValueError(f"DAC decode returned unexpected shape: {tuple(audio.shape)}.")
+            raise ValueError(
+                f"DAC decode returned unexpected shape: {tuple(audio.shape)}."
+            )
         return audio.to(source_device)
 
     def forward(self, waveform: torch.Tensor):
@@ -278,8 +286,7 @@ def codec_cache_key(config: ModelConfig) -> str:
     if config.codec_model_path:
         model_id = Path(config.codec_model_path).stem
     safe_model_id = "".join(
-        char if char.isalnum() or char in {"-", "_"} else "_"
-        for char in model_id
+        char if char.isalnum() or char in {"-", "_"} else "_" for char in model_id
     )
     return (
         f"{backend}_{safe_model_id}_codec{config.codec_latent_dim}"
