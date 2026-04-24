@@ -35,6 +35,10 @@ class UnicodeTokenizer:
         return self.token_to_id["<pad>"]
 
     @property
+    def unk_id(self):
+        return self.token_to_id["<unk>"]
+
+    @property
     def size(self):
         return len(self.token_to_id)
 
@@ -53,14 +57,19 @@ class UnicodeTokenizer:
             self.id_to_token[index] = token
         return self.token_to_id[token]
 
-    def encode(self, text: str, language_code: str):
+    def encode(self, text: str, language_code: str, add_new_tokens: bool = True):
         resolved_language = normalize_language(language_code)
         normalized = normalize_text(text, resolved_language)
         lang_tok = language_token(resolved_language)
-        self._ensure_token(lang_tok)
-        ids = [self.token_to_id["<bos>"], self.token_to_id[lang_tok]]
+        if add_new_tokens:
+            self._ensure_token(lang_tok)
+        lang_id = self.token_to_id.get(lang_tok, self.unk_id)
+        ids = [self.token_to_id["<bos>"], lang_id]
         for char in normalized:
-            ids.append(self._ensure_token(char))
+            if add_new_tokens:
+                ids.append(self._ensure_token(char))
+            else:
+                ids.append(self.token_to_id.get(char, self.unk_id))
         ids.append(self.token_to_id["<eos>"])
         return ids
 

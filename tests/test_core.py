@@ -21,6 +21,18 @@ def test_tokenizer_round_trip_and_language_token():
     assert tokenizer.decode(ids) == "hello"
 
 
+def test_tokenizer_can_freeze_vocab_for_inference():
+    tokenizer = UnicodeTokenizer()
+    tokenizer.fit(["hello"], ["en"])
+    original_size = tokenizer.size
+
+    ids = tokenizer.encode("hello z", "en", add_new_tokens=False)
+
+    assert tokenizer.size == original_size
+    assert tokenizer.unk_id in ids
+    assert max(ids) < original_size
+
+
 def test_voice_profile_store_round_trip(tmp_path: Path):
     store = VoiceProfileStore(tmp_path / "voices")
     profile = VoiceProfile(

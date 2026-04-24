@@ -178,7 +178,11 @@ class LoadedAoedeModel:
         sampling_steps: int,
     ) -> np.ndarray:
         normalized_language = normalize_language(language_code)
-        token_ids = self.tokenizer.encode(text, normalized_language)
+        token_ids = self.tokenizer.encode(
+            text,
+            normalized_language,
+            add_new_tokens=False,
+        )
         max_token_id = max(token_ids, default=0)
         if max_token_id >= self.config.model.vocab_size:
             raise ValueError(

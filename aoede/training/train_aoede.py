@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from aoede.audio.codec import FrozenAudioCodec
+from aoede.audio.codec import build_audio_codec, codec_cache_key, normalize_codec_backend
 from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.config import AppConfig, ModelConfig, TrainingConfig
 from aoede.data.dataset import ManifestDataset, collate_training_examples
@@ -30,7 +30,10 @@ except ImportError:  # pragma: no cover - optional dependency fallback
 
 DEFAULT_MAX_TEXT_TOKENS = 512
 DEFAULT_MAX_LATENT_FRAMES = 1600
-DEFAULT_CODEC_HOP_LENGTH = 320
+DEFAULT_FROZEN_CODEC_LATENT_DIM = 128
+DEFAULT_FROZEN_CODEC_HOP_LENGTH = 320
+DEFAULT_DAC_CODEC_LATENT_DIM = 1024
+DEFAULT_DAC_CODEC_HOP_LENGTH = 512
 DEFAULT_SAMPLE_RATE = 24_000
 
 
@@ -53,6 +56,43 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--shared-cache-dir", type=Path, default=Path("artifacts/cache"))
+    parser.add_argument(
+        "--codec-backend",
+        type=str,
+        default="frozen",
+        choices=["frozen", "fallback", "deterministic", "dac", "descript"],
+        help="Audio codec target space. Use dac for real pretrained codec latents.",
+    )
+    parser.add_argument(
+        "--codec-latent-dim",
+        type=int,
+        default=None,
+        help="Codec latent width. Defaults to 1024 for DAC and 128 for the frozen fallback.",
+    )
+    parser.add_argument(
+        "--codec-hop-length",
+        type=int,
+        default=None,
+        help="Samples per latent frame. Defaults to 512 for DAC and 320 for the frozen fallback.",
+    )
+    parser.add_argument(
+        "--codec-model-type",
+        type=str,
+        default="24khz",
+        help="DAC model type passed to dac.utils.download when --codec-backend=dac.",
+    )
+    parser.add_argument(
+        "--codec-model-path",
+        type=str,
+        default=None,
+        help="Optional local DAC checkpoint path. If unset, DAC downloads the requested model type.",
+    )
+    parser.add_argument(
+        "--codec-device",
+        type=str,
+        default=None,
+        help="Device used for offline codec feature extraction. Defaults to --device.",
+    )
     parser.add_argument(
         "--architecture-variant",
         type=str,
@@ -135,6 +175,22 @@ def _save_tokenizer(
 
 
 def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: UnicodeTokenizer) -> AppConfig:
+    codec_backend = normalize_codec_backend(args.codec_backend)
+    codec_latent_dim = args.codec_latent_dim
+    if codec_latent_dim is None:
+        codec_latent_dim = (
+            DEFAULT_DAC_CODEC_LATENT_DIM
+            if codec_backend == "dac"
+            else DEFAULT_FROZEN_CODEC_LATENT_DIM
+        )
+    codec_hop_length = args.codec_hop_length
+    if codec_hop_length is None:
+        codec_hop_length = (
+            DEFAULT_DAC_CODEC_HOP_LENGTH
+            if codec_backend == "dac"
+            else DEFAULT_FROZEN_CODEC_HOP_LENGTH
+        )
+
     config = AppConfig(
         project_root=output_root,
         model=ModelConfig(
@@ -146,7 +202,11 @@ def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: Unicod
             semantic_layers=4,
             style_dim=64,
             speaker_dim=192,
-            codec_latent_dim=128,
+            codec_backend=codec_backend,
+            codec_model_type=args.codec_model_type,
+            codec_model_path=args.codec_model_path,
+            codec_latent_dim=codec_latent_dim,
+            codec_hop_length=codec_hop_length,
             semantic_dim=96,
             semantic_stride=4,
             prompt_token_count=8,
@@ -237,13 +297,14 @@ def main() -> None:
     source_entries = _normalize_entries(load_manifest(source_manifest))
     tokenizer_path = (repo_root / args.tokenizer_path).resolve() if args.tokenizer_path else None
     tokenizer = _load_or_fit_tokenizer(repo_root, source_entries, tokenizer_path)
+    config = _build_config(args, output_root, tokenizer)
     filtered_entries, filter_stats = filter_trainable_entries(
         source_entries,
         tokenizer,
         max_text_tokens=DEFAULT_MAX_TEXT_TOKENS,
         max_latent_frames=DEFAULT_MAX_LATENT_FRAMES,
-        codec_hop_length=DEFAULT_CODEC_HOP_LENGTH,
-        sample_rate=DEFAULT_SAMPLE_RATE,
+        codec_hop_length=config.model.codec_hop_length,
+        sample_rate=config.model.sample_rate,
         validate_audio_paths=True,
     )
     if args.max_samples > 0:
@@ -273,20 +334,24 @@ def main() -> None:
     save_manifest(filtered_entries, train_manifest)
     resolved_tokenizer_path = _save_tokenizer(tokenizer, output_root)
 
-    config = _build_config(args, output_root, tokenizer)
-    config_path = output_root / "train_config.json"
-    config.save(config_path)
-
     shared_cache_root = (repo_root / args.shared_cache_dir).resolve()
-    cache_dir = shared_cache_root / f"codec{config.model.codec_latent_dim}_spk{config.model.speaker_dim}"
+    cache_dir = shared_cache_root / codec_cache_key(config.model)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    codec = FrozenAudioCodec(
-        sample_rate=config.model.sample_rate,
-        latent_dim=config.model.codec_latent_dim,
-        frame_size=config.model.codec_frame_size,
-        hop_length=config.model.codec_hop_length,
-    )
+    codec_device = args.codec_device or args.device
+    codec = build_audio_codec(config.model, device=codec_device)
+    if normalize_codec_backend(config.model.codec_backend) == "dac":
+        _emit_progress_message(
+            "initializing DAC audio codec "
+            f"model_type={config.model.codec_model_type} "
+            f"latent_dim={config.model.codec_latent_dim} "
+            f"hop_length={config.model.codec_hop_length} "
+            f"device={codec_device}"
+        )
+        codec.validate()
+
+    config_path = output_root / "train_config.json"
+    config.save(config_path)
 
     dataset = ManifestDataset(
         filtered_entries,
@@ -313,8 +378,8 @@ def main() -> None:
             tokenizer,
             max_text_tokens=DEFAULT_MAX_TEXT_TOKENS,
             max_latent_frames=DEFAULT_MAX_LATENT_FRAMES,
-            codec_hop_length=DEFAULT_CODEC_HOP_LENGTH,
-            sample_rate=DEFAULT_SAMPLE_RATE,
+            codec_hop_length=config.model.codec_hop_length,
+            sample_rate=config.model.sample_rate,
             validate_audio_paths=True,
         )
         if eval_entries:
@@ -439,6 +504,11 @@ def main() -> None:
         "max_steps": args.max_steps,
         "batch_size": args.batch_size,
         "architecture_variant": args.architecture_variant,
+        "codec_backend": config.model.codec_backend,
+        "codec_model_type": config.model.codec_model_type,
+        "codec_model_path": config.model.codec_model_path,
+        "codec_latent_dim": config.model.codec_latent_dim,
+        "codec_hop_length": config.model.codec_hop_length,
         "resume_from": str(resume_path) if resume_path else None,
         "languages": dict(sorted(language_counts.items())),
         "samples_with_speaker_ref": reference_count,

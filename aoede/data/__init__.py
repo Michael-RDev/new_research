@@ -11,6 +11,7 @@ from aoede.data.huggingface import (
 from aoede.data.manifest import CORPUS_PLAN, ManifestEntry, load_manifest, save_manifest
 
 _LAZY_EXPORTS = {
+    "huggingface": ("aoede.data.huggingface", None),
     "ManifestDataset": ("aoede.data.dataset", "ManifestDataset"),
     "TrainingExample": ("aoede.data.dataset", "TrainingExample"),
     "collate_training_examples": ("aoede.data.dataset", "collate_training_examples"),
@@ -19,6 +20,7 @@ _LAZY_EXPORTS = {
 __all__ = [
     "CORPUS_PLAN",
     "HFIngestRequest",
+    "huggingface",
     "ManifestDataset",
     "ManifestEntry",
     "TrainingExample",
@@ -36,7 +38,8 @@ __all__ = [
 def __getattr__(name: str):
     if name in _LAZY_EXPORTS:
         module_name, attribute_name = _LAZY_EXPORTS[name]
-        value = getattr(import_module(module_name), attribute_name)
+        module = import_module(module_name)
+        value = module if attribute_name is None else getattr(module, attribute_name)
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

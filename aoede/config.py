@@ -16,6 +16,9 @@ class ModelConfig:
     semantic_layers: int = 4
     style_dim: int = 32
     speaker_dim: int = 192
+    codec_backend: str = "frozen"
+    codec_model_type: str = "24khz"
+    codec_model_path: Optional[str] = None
     codec_latent_dim: int = 128
     codec_frame_size: int = 640
     codec_hop_length: int = 320

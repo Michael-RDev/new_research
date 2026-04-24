@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Sequence, Union
 import torch
 from torch.utils.data import Dataset
 
-from aoede.audio.codec import FrozenAudioCodec
 from aoede.audio.io import load_audio_file
 from aoede.audio.speaker import FrozenSpeakerEncoder
 from aoede.data.alignments import load_alignment, proportional_durations
@@ -37,7 +36,7 @@ class ManifestDataset(Dataset):
         self,
         entries: Sequence[ManifestEntry],
         tokenizer: UnicodeTokenizer,
-        codec: FrozenAudioCodec,
+        codec,
         speaker_encoder: Optional[FrozenSpeakerEncoder] = None,
         sample_rate: int = 24000,
         cache_dir: Optional[Path] = None,
@@ -82,7 +81,7 @@ class ManifestDataset(Dataset):
             latents = torch.load(latent_cache, map_location="cpu")
         else:
             with torch.no_grad():
-                latents = self.codec.encode(waveform.unsqueeze(0))[0]
+                latents = self.codec.encode(waveform.unsqueeze(0))[0].detach().cpu()
             if latent_cache:
                 torch.save(latents, latent_cache)
 

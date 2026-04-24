@@ -9,6 +9,12 @@ MANIFEST_PATH="${MANIFEST_PATH:-artifacts/manifests/train.jsonl}"
 ARCHITECTURE_VARIANT="${ARCHITECTURE_VARIANT:-mosaicflow}"
 RESUME_FROM="${RESUME_FROM:-}"
 DEVICE="${DEVICE:-}"
+CODEC_BACKEND="${CODEC_BACKEND:-dac}"
+CODEC_MODEL_TYPE="${CODEC_MODEL_TYPE:-24khz}"
+CODEC_MODEL_PATH="${CODEC_MODEL_PATH:-}"
+CODEC_LATENT_DIM="${CODEC_LATENT_DIM:-}"
+CODEC_HOP_LENGTH="${CODEC_HOP_LENGTH:-}"
+CODEC_DEVICE="${CODEC_DEVICE:-}"
 
 case "${PROFILE}" in
 smoke)
@@ -86,10 +92,28 @@ train_cmd=(
   --source-manifest "${MANIFEST_PATH}"
   --output-root "${OUTPUT_ROOT}"
   --architecture-variant "${ARCHITECTURE_VARIANT}"
+  --codec-backend "${CODEC_BACKEND}"
+  --codec-model-type "${CODEC_MODEL_TYPE}"
   --batch-size "${BATCH_SIZE}"
   --max-steps "${MAX_STEPS}"
   --max-samples "${MAX_SAMPLES}"
 )
+
+if [ -n "${CODEC_MODEL_PATH}" ]; then
+  train_cmd+=(--codec-model-path "${CODEC_MODEL_PATH}")
+fi
+
+if [ -n "${CODEC_LATENT_DIM}" ]; then
+  train_cmd+=(--codec-latent-dim "${CODEC_LATENT_DIM}")
+fi
+
+if [ -n "${CODEC_HOP_LENGTH}" ]; then
+  train_cmd+=(--codec-hop-length "${CODEC_HOP_LENGTH}")
+fi
+
+if [ -n "${CODEC_DEVICE}" ]; then
+  train_cmd+=(--codec-device "${CODEC_DEVICE}")
+fi
 
 if [ -n "${RESUME_FROM}" ]; then
   train_cmd+=(--resume-from "${RESUME_FROM}")

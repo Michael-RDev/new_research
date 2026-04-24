@@ -109,7 +109,7 @@ python -m pip install \
 python -m pip install \
   "${RUNPOD_TORCHCODEC_SPEC}" \
   --index-url https://download.pytorch.org/whl/cu124
-python -m pip install -e ".[audio,training,dev]"
+python -m pip install -e ".[audio,training,dev,codec]"
 python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
 python -m pip install -U "huggingface_hub[cli]"
 python -m pip install "datasets==${RUNPOD_DATASETS_VERSION}"

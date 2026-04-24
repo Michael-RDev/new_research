@@ -14,3 +14,8 @@ bash scripts/runpod/bootstrap_workspace.sh
 bash scripts/stage_and_train_mosaicflow.sh full
 ```
 
+`stage_and_train_mosaicflow.sh` defaults to `CODEC_BACKEND=dac`, which stages
+training targets with the pretrained 24 kHz Descript Audio Codec instead of the
+old deterministic fallback codec. Use `CODEC_BACKEND=frozen` only for offline
+smoke tests or debugging; checkpoints trained with the fallback codec will not
+produce realistic speech.

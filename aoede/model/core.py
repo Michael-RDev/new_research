@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from aoede.audio.codec import FrozenAudioCodec
+from aoede.audio.codec import build_audio_codec
 from aoede.config import ModelConfig
 from aoede.model.atlasflow import (
     AtlasComposer,
@@ -264,12 +264,7 @@ class AoedeModel(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.codec = FrozenAudioCodec(
-            sample_rate=config.sample_rate,
-            latent_dim=config.codec_latent_dim,
-            frame_size=config.codec_frame_size,
-            hop_length=config.codec_hop_length,
-        )
+        self.codec = build_audio_codec(config)
         self.text_encoder = TextEncoder(config)
         self.decoder = FlowMatchingDecoder(config)
         self.speaker_head = nn.Linear(config.d_model, config.speaker_dim)

@@ -20,6 +20,9 @@ dependencies = [
 audio = [
   "soundfile>=0.13.1",
 ]
+codec = [
+  "descript-audio-codec>=1.0.0",
+]
 training = [
   "datasets>=4.4.1",
   "sentencepiece>=0.2.1",
