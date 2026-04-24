@@ -80,7 +80,8 @@ def build_masked_semantic_input(
         device=semantic_targets.device,
     ) < mask_ratio
     if semantic_targets.shape[1] > 1:
-        mask[:, 1:] |= mask[:, :-1]
+        previous_mask = mask[:, :-1].clone()
+        mask[:, 1:] = mask[:, 1:] | previous_mask
     missing_any = ~mask.any(dim=1)
     if missing_any.any():
         mask[missing_any, 0] = True

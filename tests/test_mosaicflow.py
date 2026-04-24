@@ -2,6 +2,7 @@ import torch
 
 from aoede.config import ModelConfig
 from aoede.model.core import AoedeModel
+from aoede.model.mosaicflow import build_masked_semantic_input
 
 
 def build_config():
@@ -54,6 +55,16 @@ def test_mosaicflow_forward_returns_factorized_losses():
     assert torch.isfinite(output["semantic_loss"])
     assert torch.isfinite(output["prompt_loss"])
     assert torch.isfinite(output["coverage_loss"])
+
+
+def test_masked_semantic_input_expands_mask_without_aliasing():
+    targets = torch.randn(3, 12, 8)
+
+    masked, mask = build_masked_semantic_input(targets)
+
+    assert masked.shape == targets.shape
+    assert mask.shape == targets.shape[:2]
+    assert mask.any(dim=1).all()
 
 
 def test_mosaicflow_can_extract_prompt_memory_and_synthesize():
