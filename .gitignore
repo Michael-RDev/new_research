@@ -39,12 +39,16 @@ temp/
 
 # Generated experiment outputs
 artifacts/
+results/
 **/checkpoints/
 **/tensorboard/
 **/wandb/
+pretrained_models/
 
 # Nested external repos that should stay local-only
 cloneval/
 
 # Local recovery / transfer dumps
-resutls/
+*.tar
+*.tar.gz
+*.tgz
