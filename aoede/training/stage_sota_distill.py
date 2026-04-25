@@ -113,6 +113,7 @@ def _stage_split(
         iterator = tqdm(entries, desc=f"sota-stage-{split_name}", unit="item")
 
     staged = []
+    skipped = []
     for entry in iterator:
         item_id = _safe_id(entry.item_id)
         real_latents_path = latents_dir / f"{item_id}.real.pt"
@@ -120,36 +121,62 @@ def _stage_split(
         reference_latents_path = latents_dir / f"{item_id}.reference.pt"
         speaker_embedding_path = speakers_dir / f"{item_id}.speaker.pt"
         teacher_audio_path = teacher_audio_dir / f"{item_id}.wav"
+        reference_audio = entry.speaker_ref or entry.audio_path
 
-        if not real_latents_path.exists():
-            torch.save(_encode_audio(codec, entry.audio_path, sample_rate), real_latents_path)
-        real_latents = torch.load(real_latents_path, map_location="cpu")
+        try:
+            if not real_latents_path.exists():
+                torch.save(_encode_audio(codec, entry.audio_path, sample_rate), real_latents_path)
+            real_latents = torch.load(real_latents_path, map_location="cpu")
+
+            if not reference_latents_path.exists():
+                torch.save(_encode_audio(codec, reference_audio, sample_rate), reference_latents_path)
+
+            if not speaker_embedding_path.exists():
+                audio, sr = load_audio_file(reference_audio, target_sample_rate=sample_rate)
+                speaker_embedding = torch.from_numpy(
+                    speaker_encoder.encode(audio, sample_rate=sr)
+                ).float()
+                torch.save(speaker_embedding, speaker_embedding_path)
+
+            if not teacher_audio_path.exists():
+                result = provider.synthesize(
+                    text=entry.text,
+                    reference_audio=reference_audio,
+                    language=entry.language_code,
+                    prompt_text=None,
+                )
+                teacher_audio_path.write_bytes(
+                    save_audio_bytes(result.audio, sample_rate=result.sample_rate)
+                )
+            if not teacher_latents_path.exists():
+                torch.save(_encode_audio(codec, str(teacher_audio_path), sample_rate), teacher_latents_path)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+            skipped.append(
+                {
+                    "item_id": entry.item_id,
+                    "audio_path": entry.audio_path,
+                    "speaker_ref": entry.speaker_ref,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            if tqdm is not None:
+                tqdm.write(f"[sota-stage] skip split={split_name} item={entry.item_id}: {type(exc).__name__}: {exc}")
+            else:
+                print(f"[sota-stage] skip split={split_name} item={entry.item_id}: {type(exc).__name__}: {exc}", flush=True)
+            for partial_path in (
+                real_latents_path,
+                teacher_latents_path,
+                reference_latents_path,
+                speaker_embedding_path,
+                teacher_audio_path,
+            ):
+                if partial_path.exists() and partial_path.stat().st_size == 0:
+                    partial_path.unlink()
+            continue
+
         if update_latent_stats:
             latent_stats.update(real_latents)
-
-        reference_audio = entry.speaker_ref or entry.audio_path
-        if not reference_latents_path.exists():
-            torch.save(_encode_audio(codec, reference_audio, sample_rate), reference_latents_path)
-
-        if not speaker_embedding_path.exists():
-            audio, sr = load_audio_file(reference_audio, target_sample_rate=sample_rate)
-            speaker_embedding = torch.from_numpy(
-                speaker_encoder.encode(audio, sample_rate=sr)
-            ).float()
-            torch.save(speaker_embedding, speaker_embedding_path)
-
-        if not teacher_audio_path.exists():
-            result = provider.synthesize(
-                text=entry.text,
-                reference_audio=reference_audio,
-                language=entry.language_code,
-                prompt_text=None,
-            )
-            teacher_audio_path.write_bytes(
-                save_audio_bytes(result.audio, sample_rate=result.sample_rate)
-            )
-        if not teacher_latents_path.exists():
-            torch.save(_encode_audio(codec, str(teacher_audio_path), sample_rate), teacher_latents_path)
 
         staged.append(
             SotaDistillEntry(
@@ -166,6 +193,11 @@ def _stage_split(
                 provider=provider_name,
             )
         )
+    skip_path = split_root / "skipped.jsonl"
+    if skipped:
+        with skip_path.open("w", encoding="utf-8") as handle:
+            for row in skipped:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return staged
 
 
