@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from aoede.audio.codec import build_audio_codec, codec_cache_key, normalize_codec_backend
-from aoede.audio.speaker import FrozenSpeakerEncoder
+from aoede.audio.speaker import build_speaker_encoder, speaker_cache_key
 from aoede.config import AppConfig, ModelConfig, TrainingConfig
 from aoede.data.dataset import ManifestDataset, collate_training_examples
 from aoede.data.manifest import load_manifest, save_manifest
@@ -33,7 +33,7 @@ DEFAULT_MAX_LATENT_FRAMES = 1600
 DEFAULT_FROZEN_CODEC_LATENT_DIM = 128
 DEFAULT_FROZEN_CODEC_HOP_LENGTH = 320
 DEFAULT_DAC_CODEC_LATENT_DIM = 1024
-DEFAULT_DAC_CODEC_HOP_LENGTH = 512
+DEFAULT_DAC_CODEC_HOP_LENGTH = 320
 DEFAULT_SAMPLE_RATE = 24_000
 
 
@@ -94,10 +94,23 @@ def get_parser() -> argparse.ArgumentParser:
         help="Device used for offline codec feature extraction. Defaults to --device.",
     )
     parser.add_argument(
+        "--speaker-encoder",
+        type=str,
+        default="frozen",
+        choices=["frozen", "fallback", "ecapa", "speechbrain"],
+        help="Speaker embedding backend. Use ecapa for SpeechBrain ECAPA-TDNN.",
+    )
+    parser.add_argument(
+        "--speaker-model-source",
+        type=str,
+        default="speechbrain/spkrec-ecapa-voxceleb",
+        help="SpeechBrain speaker encoder source when --speaker-encoder=ecapa.",
+    )
+    parser.add_argument(
         "--architecture-variant",
         type=str,
         default="mosaicflow",
-        choices=["baseline", "atlasflow", "mosaicflow"],
+        choices=["baseline", "atlasflow", "mosaicflow", "sota_residualflow"],
     )
     parser.add_argument(
         "--init-from-omnivoice",
@@ -202,6 +215,8 @@ def _build_config(args: argparse.Namespace, output_root: Path, tokenizer: Unicod
             semantic_layers=4,
             style_dim=64,
             speaker_dim=192,
+            speaker_encoder_backend=args.speaker_encoder,
+            speaker_encoder_source=args.speaker_model_source,
             codec_backend=codec_backend,
             codec_model_type=args.codec_model_type,
             codec_model_path=args.codec_model_path,
@@ -279,6 +294,12 @@ def _emit_progress_message(message: str) -> None:
 
 def main() -> None:
     args = get_parser().parse_args()
+    if args.architecture_variant == "sota_residualflow":
+        raise SystemExit(
+            "sota_residualflow uses the teacher-distillation pipeline. Run "
+            "`python -m aoede.training.train_sota_residualflow` or "
+            "`bash scripts/train_sota_residualflow.sh core`."
+        )
 
     repo_root = Path(__file__).resolve().parents[2]
     source_manifest = (repo_root / args.source_manifest).resolve()
@@ -335,7 +356,15 @@ def main() -> None:
     resolved_tokenizer_path = _save_tokenizer(tokenizer, output_root)
 
     shared_cache_root = (repo_root / args.shared_cache_dir).resolve()
-    cache_dir = shared_cache_root / codec_cache_key(config.model)
+    cache_dir = shared_cache_root / (
+        codec_cache_key(config.model)
+        + "_"
+        + speaker_cache_key(
+            config.model.speaker_encoder_backend,
+            config.model.speaker_dim,
+            config.model.speaker_encoder_source,
+        )
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     codec_device = args.codec_device or args.device
@@ -350,6 +379,13 @@ def main() -> None:
         )
         codec.validate()
 
+    speaker_encoder = build_speaker_encoder(
+        backend=config.model.speaker_encoder_backend,
+        embedding_dim=config.model.speaker_dim,
+        device=args.device,
+        source=config.model.speaker_encoder_source,
+    )
+
     config_path = output_root / "train_config.json"
     config.save(config_path)
 
@@ -357,7 +393,7 @@ def main() -> None:
         filtered_entries,
         tokenizer=tokenizer,
         codec=codec,
-        speaker_encoder=FrozenSpeakerEncoder(embedding_dim=config.model.speaker_dim),
+        speaker_encoder=speaker_encoder,
         cache_dir=cache_dir,
         planner_stride=config.model.planner_stride,
         planner_dim=config.model.planner_dim,
@@ -387,9 +423,7 @@ def main() -> None:
                 eval_entries,
                 tokenizer=tokenizer,
                 codec=codec,
-                speaker_encoder=FrozenSpeakerEncoder(
-                    embedding_dim=config.model.speaker_dim
-                ),
+                speaker_encoder=speaker_encoder,
                 cache_dir=cache_dir,
                 planner_stride=config.model.planner_stride,
                 planner_dim=config.model.planner_dim,
@@ -509,6 +543,8 @@ def main() -> None:
         "codec_model_path": config.model.codec_model_path,
         "codec_latent_dim": config.model.codec_latent_dim,
         "codec_hop_length": config.model.codec_hop_length,
+        "speaker_encoder_backend": config.model.speaker_encoder_backend,
+        "speaker_encoder_source": config.model.speaker_encoder_source,
         "resume_from": str(resume_path) if resume_path else None,
         "languages": dict(sorted(language_counts.items())),
         "samples_with_speaker_ref": reference_count,

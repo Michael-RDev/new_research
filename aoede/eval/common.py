@@ -7,7 +7,7 @@ from typing import Optional
 import numpy as np
 
 from aoede.audio.io import load_audio_file
-from aoede.audio.speaker import FrozenSpeakerEncoder
+from aoede.audio.speaker import build_speaker_encoder
 from aoede.config import (
     AppConfig,
     ArtifactsConfig,
@@ -65,7 +65,7 @@ class LoadedAoedeModel:
     config: AppConfig
     checkpoint_path: Path
     tokenizer: UnicodeTokenizer
-    speaker_encoder: FrozenSpeakerEncoder
+    speaker_encoder: object
     model: AoedeModel
     device: object
     torch: object
@@ -115,8 +115,11 @@ class LoadedAoedeModel:
             config=config,
             checkpoint_path=checkpoint_path,
             tokenizer=tokenizer,
-            speaker_encoder=FrozenSpeakerEncoder(
-                embedding_dim=config.model.speaker_dim
+            speaker_encoder=build_speaker_encoder(
+                backend=config.model.speaker_encoder_backend,
+                embedding_dim=config.model.speaker_dim,
+                device=str(resolved_device),
+                source=config.model.speaker_encoder_source,
             ),
             model=model,
             device=resolved_device,

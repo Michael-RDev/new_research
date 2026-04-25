@@ -16,6 +16,8 @@ class ModelConfig:
     semantic_layers: int = 4
     style_dim: int = 32
     speaker_dim: int = 192
+    speaker_encoder_backend: str = "frozen"
+    speaker_encoder_source: str = "speechbrain/spkrec-ecapa-voxceleb"
     codec_backend: str = "frozen"
     codec_model_type: str = "24khz"
     codec_model_path: Optional[str] = None

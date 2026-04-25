@@ -15,6 +15,8 @@ CODEC_MODEL_PATH="${CODEC_MODEL_PATH:-}"
 CODEC_LATENT_DIM="${CODEC_LATENT_DIM:-}"
 CODEC_HOP_LENGTH="${CODEC_HOP_LENGTH:-}"
 CODEC_DEVICE="${CODEC_DEVICE:-}"
+AOEDE_SPEAKER_ENCODER="${AOEDE_SPEAKER_ENCODER:-frozen}"
+AOEDE_SPEAKER_MODEL_SOURCE="${AOEDE_SPEAKER_MODEL_SOURCE:-speechbrain/spkrec-ecapa-voxceleb}"
 
 case "${PROFILE}" in
 smoke)
@@ -94,6 +96,8 @@ train_cmd=(
   --architecture-variant "${ARCHITECTURE_VARIANT}"
   --codec-backend "${CODEC_BACKEND}"
   --codec-model-type "${CODEC_MODEL_TYPE}"
+  --speaker-encoder "${AOEDE_SPEAKER_ENCODER}"
+  --speaker-model-source "${AOEDE_SPEAKER_MODEL_SOURCE}"
   --batch-size "${BATCH_SIZE}"
   --max-steps "${MAX_STEPS}"
   --max-samples "${MAX_SAMPLES}"

@@ -23,6 +23,13 @@ audio = [
 codec = [
   "descript-audio-codec>=1.0.0",
 ]
+sota = [
+  "speechbrain>=1.0.3",
+  "voxcpm",
+]
+qwen = [
+  "qwen-tts",
+]
 training = [
   "datasets>=4.4.1",
   "sentencepiece>=0.2.1",
@@ -42,6 +49,8 @@ aoede-prepare-hf = "aoede.data.huggingface:main"
 aoede-infer-batch = "aoede.eval.infer_batch:main"
 aoede-cloneval = "aoede.eval.cloneval_benchmark:main"
 aoede-runpod-dual = "aoede.runpod.dual_pod_launcher:main"
+aoede-stage-sota = "aoede.training.stage_sota_distill:main"
+aoede-train-sota = "aoede.training.train_sota_residualflow:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aoede"]
