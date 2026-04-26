@@ -207,3 +207,36 @@ def test_sota_distill_dataset_collates_normalized_latents(tmp_path: Path):
     assert batch["target_latents"].shape == (1, 3, 4)
     assert batch["teacher_latents"].shape == (1, 3, 4)
     assert batch["reference_mask"].tolist() == [[True, True]]
+
+
+def test_sota_distill_dataset_does_not_grow_tokenizer_for_unknown_text(tmp_path: Path):
+    tokenizer = UnicodeTokenizer()
+    tokenizer.fit(["hello"], ["en"])
+    initial_size = tokenizer.size
+    stats = LatentStats(mean=torch.zeros(4), std=torch.ones(4), count=10)
+    real = tmp_path / "real.pt"
+    teacher = tmp_path / "teacher.pt"
+    reference = tmp_path / "reference.pt"
+    speaker = tmp_path / "speaker.pt"
+    torch.save(torch.ones(3, 4), real)
+    torch.save(torch.zeros(3, 4), teacher)
+    torch.save(torch.ones(2, 4), reference)
+    torch.save(torch.ones(192), speaker)
+    entry = SotaDistillEntry(
+        item_id="a",
+        text="hello 🐉",
+        language_code="en",
+        audio_path="a.wav",
+        speaker_ref=None,
+        real_latents_path=str(real),
+        teacher_latents_path=str(teacher),
+        reference_latents_path=str(reference),
+        speaker_embedding_path=str(speaker),
+    )
+
+    dataset = SotaDistillDataset([entry], tokenizer, stats)
+    example = dataset[0]
+
+    assert tokenizer.size == initial_size
+    assert int(example["token_ids"].max()) < initial_size
+    assert tokenizer.unk_id in example["token_ids"].tolist()

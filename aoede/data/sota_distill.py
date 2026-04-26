@@ -57,10 +57,12 @@ class SotaDistillDataset(Dataset):
         entries: Sequence[SotaDistillEntry],
         tokenizer: UnicodeTokenizer,
         latent_stats: LatentStats,
+        max_text_tokens: int = 512,
     ):
         self.entries = list(entries)
         self.tokenizer = tokenizer
         self.latent_stats = latent_stats
+        self.max_text_tokens = max_text_tokens
 
     def __len__(self):
         return len(self.entries)
@@ -73,13 +75,19 @@ class SotaDistillDataset(Dataset):
         real, teacher = align_latent_pair(real, teacher)
         reference = torch.load(entry.reference_latents_path, map_location="cpu").float()
         speaker = torch.load(entry.speaker_embedding_path, map_location="cpu").float()
+        token_ids = self.tokenizer.encode(
+            entry.text,
+            language_code,
+            add_new_tokens=False,
+        )
+        if self.max_text_tokens > 0 and len(token_ids) > self.max_text_tokens:
+            token_ids = token_ids[: self.max_text_tokens]
+            token_ids[-1] = self.tokenizer.token_to_id["<eos>"]
+
         return {
             "text": entry.text,
             "language_code": language_code,
-            "token_ids": torch.tensor(
-                self.tokenizer.encode(entry.text, language_code),
-                dtype=torch.long,
-            ),
+            "token_ids": torch.tensor(token_ids, dtype=torch.long),
             "language_id": torch.tensor(language_index(language_code), dtype=torch.long),
             "target_latents": self.latent_stats.normalize(real),
             "teacher_latents": self.latent_stats.normalize(teacher),

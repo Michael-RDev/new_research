@@ -126,8 +126,31 @@ class SotaTrainer:
             for key, value in batch.items()
         }
 
+    def _validate_batch_indices(self, batch: dict) -> None:
+        token_ids = batch["token_ids"]
+        if token_ids.numel() > 0:
+            min_token = int(token_ids.min().item())
+            max_token = int(token_ids.max().item())
+            if min_token < 0 or max_token >= self.config.model.vocab_size:
+                raise ValueError(
+                    "SOTA batch has token id outside model vocab: "
+                    f"min={min_token} max={max_token} "
+                    f"vocab_size={self.config.model.vocab_size}. "
+                    "Rebuild artifacts/tokenizer.json or restage with the latest code."
+                )
+        language_ids = batch["language_ids"]
+        if language_ids.numel() > 0:
+            min_language = int(language_ids.min().item())
+            max_language = int(language_ids.max().item())
+            if min_language < 0 or max_language >= 512:
+                raise ValueError(
+                    "SOTA batch has language id outside embedding range: "
+                    f"min={min_language} max={max_language} embedding_size=512."
+                )
+
     def train_step(self, batch: dict) -> dict[str, float]:
         self.model.train()
+        self._validate_batch_indices(batch)
         batch = self._to_device(batch)
         self.optimizer.zero_grad(set_to_none=True)
         with self._autocast():
@@ -167,6 +190,7 @@ class SotaTrainer:
         aggregate = defaultdict(float)
         count = 0
         for batch in loader:
+            self._validate_batch_indices(batch)
             batch = self._to_device(batch)
             with self._autocast():
                 output = self.model.loss(
@@ -228,7 +252,12 @@ def main() -> None:
     config.save(output_root / "train_config.json")
 
     train_entries = load_sota_manifest((repo_root / args.train_manifest).resolve())
-    train_dataset = SotaDistillDataset(train_entries, tokenizer, latent_stats)
+    train_dataset = SotaDistillDataset(
+        train_entries,
+        tokenizer,
+        latent_stats,
+        max_text_tokens=config.model.max_text_tokens,
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.training.batch_size,
@@ -242,7 +271,12 @@ def main() -> None:
         eval_entries = load_sota_manifest(eval_path)
         if eval_entries:
             eval_loader = DataLoader(
-                SotaDistillDataset(eval_entries, tokenizer, latent_stats),
+                SotaDistillDataset(
+                    eval_entries,
+                    tokenizer,
+                    latent_stats,
+                    max_text_tokens=config.model.max_text_tokens,
+                ),
                 batch_size=config.training.batch_size,
                 shuffle=False,
                 num_workers=0,
