@@ -14,9 +14,11 @@ OMNIVOICE_BASE_COMMIT_FILE="${OMNIVOICE_BASE_COMMIT_FILE:-${ROOT_REPO_DIR}/patch
 OMNIVOICE_PATCH_FILE="${OMNIVOICE_PATCH_FILE:-${ROOT_REPO_DIR}/patches/omnivoice-local.patch}"
 OMNIVOICE_PATCH_MARKER="${OMNIVOICE_PATCH_MARKER:-${OMNIVOICE_DIR}/.aoede_patch_sha256}"
 FORCE_OMNIVOICE_RECLONE="${FORCE_OMNIVOICE_RECLONE:-0}"
+BOOTSTRAP_OMNIVOICE="${BOOTSTRAP_OMNIVOICE:-0}"
 CLONEVAL_REPO_URL="${CLONEVAL_REPO_URL:-https://github.com/amu-cai/cloneval.git}"
 CLONEVAL_REPO_BRANCH="${CLONEVAL_REPO_BRANCH:-main}"
 CLONEVAL_DIR="${CLONEVAL_DIR:-${WORKSPACE}/cloneval}"
+BOOTSTRAP_CLONEVAL="${BOOTSTRAP_CLONEVAL:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUNPOD_TORCH_VERSION="${RUNPOD_TORCH_VERSION:-2.6.0}"
 RUNPOD_TORCHAUDIO_VERSION="${RUNPOD_TORCHAUDIO_VERSION:-2.6.0}"
@@ -76,14 +78,16 @@ if [ ! -d "${ROOT_REPO_DIR}/.git" ]; then
   git clone --branch "${ROOT_REPO_BRANCH}" "${ROOT_REPO_URL}" "${ROOT_REPO_DIR}"
 fi
 
-if [ "${FORCE_OMNIVOICE_RECLONE}" = "1" ] && [ -d "${OMNIVOICE_DIR}" ]; then
+if [ "${BOOTSTRAP_OMNIVOICE}" = "1" ] && [ "${FORCE_OMNIVOICE_RECLONE}" = "1" ] && [ -d "${OMNIVOICE_DIR}" ]; then
   rm -rf "${OMNIVOICE_DIR}"
 fi
 
-ensure_omnivoice_checkout
-apply_omnivoice_patch
+if [ "${BOOTSTRAP_OMNIVOICE}" = "1" ]; then
+  ensure_omnivoice_checkout
+  apply_omnivoice_patch
+fi
 
-if [ ! -d "${CLONEVAL_DIR}/.git" ]; then
+if [ "${BOOTSTRAP_CLONEVAL}" = "1" ] && [ ! -d "${CLONEVAL_DIR}/.git" ]; then
   git clone --branch "${CLONEVAL_REPO_BRANCH}" "${CLONEVAL_REPO_URL}" "${CLONEVAL_DIR}"
 fi
 
@@ -110,7 +114,9 @@ python -m pip install \
   "${RUNPOD_TORCHCODEC_SPEC}" \
   --index-url https://download.pytorch.org/whl/cu124
 python -m pip install -e ".[audio,training,dev,codec,sota]"
-python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
+if [ "${BOOTSTRAP_OMNIVOICE}" = "1" ]; then
+  python -m pip install -e "${OMNIVOICE_DIR}[eval,research]"
+fi
 python -m pip install -U "huggingface_hub[cli]"
 python -m pip install "datasets==${RUNPOD_DATASETS_VERSION}"
 
@@ -128,16 +134,31 @@ mkdir -p \
   "${WORKSPACE}/data/tokens/stage1_smoke" \
   "${WORKSPACE}/data/tokens/stage1_core" \
   "${WORKSPACE}/data/tokens/stage2_expansion" \
-  "${WORKSPACE}/data/cloneval" \
   "${WORKSPACE}/exp" \
   "${WORKSPACE}/logs"
 
+if [ "${BOOTSTRAP_CLONEVAL}" = "1" ]; then
+  mkdir -p "${WORKSPACE}/data/cloneval"
+fi
+
 echo "Bootstrap complete."
 echo "Root repo: ${ROOT_REPO_DIR}"
-echo "OmniVoice repo: ${OMNIVOICE_DIR}"
-if [ -f "${OMNIVOICE_PATCH_FILE}" ]; then
-  echo "Applied OmniVoice patch: ${OMNIVOICE_PATCH_FILE}"
+if [ "${BOOTSTRAP_OMNIVOICE}" = "1" ]; then
+  echo "OmniVoice repo: ${OMNIVOICE_DIR}"
+  if [ -f "${OMNIVOICE_PATCH_FILE}" ]; then
+    echo "Applied OmniVoice patch: ${OMNIVOICE_PATCH_FILE}"
+  fi
+else
+  echo "OmniVoice bootstrap skipped. Set BOOTSTRAP_OMNIVOICE=1 for legacy comparisons."
 fi
-echo "CloneEval repo: ${CLONEVAL_DIR}"
+if [ "${BOOTSTRAP_CLONEVAL}" = "1" ]; then
+  echo "CloneEval repo: ${CLONEVAL_DIR}"
+else
+  echo "CloneEval bootstrap skipped. Set BOOTSTRAP_CLONEVAL=1 for CloneEval evaluation."
+fi
 echo "Activate: source ${ROOT_REPO_DIR}/.venv/bin/activate"
-echo "PYTHONPATH: export PYTHONPATH=${ROOT_REPO_DIR}:${OMNIVOICE_DIR}:\${PYTHONPATH:-}"
+if [ "${BOOTSTRAP_OMNIVOICE}" = "1" ]; then
+  echo "PYTHONPATH: export PYTHONPATH=${ROOT_REPO_DIR}:${OMNIVOICE_DIR}:\${PYTHONPATH:-}"
+else
+  echo "PYTHONPATH: export PYTHONPATH=${ROOT_REPO_DIR}:\${PYTHONPATH:-}"
+fi

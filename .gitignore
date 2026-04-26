@@ -8,6 +8,12 @@
 .env.*
 !.env.example
 
+# Private research drafts and local voice/audio samples
+paper/
+me_voice.mp3
+*.mp3
+*.wav
+
 # Python
 __pycache__/
 *.py[cod]
@@ -36,6 +42,7 @@ build/
 *.log
 tmp/
 temp/
+omnivoice_eval/
 
 # Generated experiment outputs
 artifacts/
@@ -44,6 +51,7 @@ results/
 **/tensorboard/
 **/wandb/
 pretrained_models/
+Formatting_Instructions_For_NeurIPS_2026/
 
 # Nested external repos that should stay local-only
 cloneval/

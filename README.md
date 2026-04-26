@@ -1,11 +1,13 @@
 # Aoede
 
-Aoede is a multilingual text-to-speech and zero-shot voice-cloning research scaffold.
+Aoede is a teacher-anchored voice-cloning research scaffold.
 
-The current high-quality path is `sota_residualflow`: a permissive hybrid
-voice-cloning system that uses VoxCPM2 as the default human-quality teacher,
-DAC as the codec target, SpeechBrain ECAPA-TDNN as the speaker encoder, and
-a trainable Aoede residual-flow refiner over teacher DAC latents.
+The active research path is `sota_residualflow`: a permissive hybrid system
+that uses VoxCPM2 as the default human-quality teacher, DAC as the codec target,
+SpeechBrain ECAPA-TDNN as the speaker encoder, and a trainable Aoede
+residual-flow refiner over teacher DAC latents. The paper frames this as a safe
+adaptation problem: the teacher is the fallback, and Aoede only wins if the
+refiner passes a non-regression gate.
 
 ## RunPod Quick Start
 
@@ -32,12 +34,14 @@ python scripts/run_sota_clone.py \
 
 `--provider auto` keeps the teacher output if the Aoede refiner fails or appears
 to damage speaker similarity. Use `--provider voxcpm2` for teacher-only output,
-or `--provider aoede-refiner` when you explicitly want the trained residual
+or `--provider aoede-refiner` when you explicitly want the raw trained residual
 refiner result.
 
-The older `mosaicflow` path remains available through
-`scripts/stage_and_train_mosaicflow.sh`, but it is no longer the recommended
-path for human-sounding cloning.
+Older MosaicFlow, AtlasFlow, F5, OmniVoice, and dual-RunPod pieces are legacy
+scaffolding from earlier experiments. They are not the current paper direction
+and should not be used for the main Aoede claims.
 
 See `docs/sota_hybrid.md` for the full bootstrap, staging, training, and
 generation workflow.
+
+See `docs/repo_scope.md` for what is currently in scope versus legacy.

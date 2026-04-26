@@ -35,7 +35,7 @@ if [ ! -x "${PYTHON_BIN}" ]; then
 fi
 
 cd "${ROOT_REPO_DIR}"
-export PYTHONPATH="${ROOT_REPO_DIR}:${ROOT_REPO_DIR}/OmniVoice:${PYTHONPATH:-}"
+export PYTHONPATH="${ROOT_REPO_DIR}:${PYTHONPATH:-}"
 mkdir -p "${OUTPUT_ROOT}"
 
 "${PYTHON_BIN}" -m aoede.training.stage_sota_distill \

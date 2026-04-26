@@ -94,6 +94,12 @@ bash scripts/stage_sota_distill.sh core 2>&1 | tee artifacts/experiments/sota_re
 bash scripts/train_sota_residualflow.sh core 2>&1 | tee artifacts/experiments/sota_residualflow_core/train.log
 ```
 
+The SOTA bootstrap path is intentionally standalone. It does not need the old
+OmniVoice checkout to stage or train the residual-flow model. If you later want
+the legacy OmniVoice comparison or a local CloneEval checkout, set
+`BOOTSTRAP_OMNIVOICE=1` or `BOOTSTRAP_CLONEVAL=1` before running the bootstrap
+script.
+
 Detach tmux with `Ctrl-b`, then `d`. Reattach with:
 
 ```bash
