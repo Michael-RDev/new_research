@@ -27,7 +27,17 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider", default="auto", choices=["auto", "voxcpm2", "qwen3", "aoede-refiner", "passthrough"])
     parser.add_argument("--teacher-provider", default="voxcpm2")
     parser.add_argument("--teacher-model-id", default=None)
+    parser.add_argument(
+        "--teacher-audio",
+        default=None,
+        help="Use an existing teacher WAV instead of running a pretrained teacher provider.",
+    )
     parser.add_argument("--model", default=None, help="SOTA residual-flow checkpoint.")
+    parser.add_argument(
+        "--tokenizer-path",
+        default=None,
+        help="Override tokenizer JSON path for checkpoints trained on another machine.",
+    )
     parser.add_argument("--ref-audio", required=True)
     parser.add_argument("--ref-text", default=None)
     parser.add_argument("--text", required=True)
@@ -57,16 +67,23 @@ def _app_config_from_dict(payload: dict) -> AppConfig:
     )
 
 
-def _load_refiner(checkpoint_path: str, device: str):
+def _load_refiner(checkpoint_path: str, device: str, tokenizer_path_override: str | None = None):
     checkpoint = torch.load(Path(checkpoint_path).expanduser().resolve(), map_location=device)
     config = _app_config_from_dict(checkpoint["config"])
     model = SotaResidualFlowModel(config.model).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     stats = LatentStats.from_dict(checkpoint["latent_stats"])
-    tokenizer_path = Path(checkpoint.get("tokenizer_path", "artifacts/tokenizer.json"))
+    if tokenizer_path_override:
+        tokenizer_path = Path(tokenizer_path_override).expanduser()
+    else:
+        tokenizer_path = Path(checkpoint.get("tokenizer_path", "artifacts/tokenizer.json"))
     if not tokenizer_path.is_absolute():
         tokenizer_path = Path.cwd() / tokenizer_path
+    if not tokenizer_path.exists() and tokenizer_path.is_absolute():
+        local_tokenizer_path = Path.cwd() / "artifacts" / "tokenizer.json"
+        if local_tokenizer_path.exists():
+            tokenizer_path = local_tokenizer_path
     tokenizer = UnicodeTokenizer(tokenizer_path)
     return model, config, stats, tokenizer
 
@@ -87,6 +104,17 @@ def _sane_audio(audio: np.ndarray) -> bool:
 
 
 def _run_teacher(args) -> ProviderResult:
+    if args.teacher_audio:
+        audio, sample_rate = load_audio_file(args.teacher_audio)
+        return ProviderResult(
+            audio=audio,
+            sample_rate=sample_rate,
+            provider="teacher-audio",
+            metadata={
+                "source": str(Path(args.teacher_audio).expanduser().resolve()),
+                "language": args.language,
+            },
+        )
     provider = get_provider(
         args.teacher_provider if args.provider in {"auto", "aoede-refiner"} else args.provider,
         device=args.device,
@@ -103,7 +131,7 @@ def _run_teacher(args) -> ProviderResult:
 def _run_refiner(args, teacher_result: ProviderResult) -> ProviderResult:
     if not args.model:
         raise ValueError("--model is required for --provider aoede-refiner or --provider auto refinement.")
-    model, config, stats, tokenizer = _load_refiner(args.model, args.device)
+    model, config, stats, tokenizer = _load_refiner(args.model, args.device, args.tokenizer_path)
     codec = build_audio_codec(config.model, device=args.device)
     speaker_encoder = build_speaker_encoder(
         backend=args.speaker_encoder,

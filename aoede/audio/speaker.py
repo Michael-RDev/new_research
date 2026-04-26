@@ -73,6 +73,24 @@ class SpeechBrainEcapaSpeakerEncoder:
     def _load_classifier(self):
         if self._classifier is not None:
             return self._classifier
+        if hasattr(torch, "amp"):
+            if not hasattr(torch.amp, "custom_fwd"):
+                def _custom_fwd(fwd=None, *, cast_inputs=None, device_type=None):
+                    if fwd is None:
+                        return lambda fn: torch.cuda.amp.custom_fwd(
+                            fn,
+                            cast_inputs=cast_inputs,
+                        )
+                    return torch.cuda.amp.custom_fwd(fwd, cast_inputs=cast_inputs)
+
+                torch.amp.custom_fwd = _custom_fwd
+            if not hasattr(torch.amp, "custom_bwd"):
+                def _custom_bwd(bwd=None, *, device_type=None):
+                    if bwd is None:
+                        return lambda fn: torch.cuda.amp.custom_bwd(fn)
+                    return torch.cuda.amp.custom_bwd(bwd)
+
+                torch.amp.custom_bwd = _custom_bwd
         try:
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError as exc:  # pragma: no cover - optional dependency
