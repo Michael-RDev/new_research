@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,6 +29,23 @@ class VoiceCloneProvider:
         prompt_text: Optional[str] = None,
     ) -> ProviderResult:
         raise NotImplementedError
+
+
+def _disable_teacher_compile_if_requested() -> None:
+    if os.environ.get("AOEDE_DISABLE_TEACHER_COMPILE", "1") == "0":
+        return
+    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+    os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    os.environ.setdefault("TORCHINDUCTOR_USE_CUDAGRAPHS", "0")
+    try:
+        import torch
+
+        if hasattr(torch, "_dynamo"):
+            torch._dynamo.config.suppress_errors = True
+        if hasattr(torch, "_inductor"):
+            torch._inductor.config.triton.cudagraphs = False
+    except Exception:
+        return
 
 
 class PassthroughProvider(VoiceCloneProvider):
@@ -68,6 +86,7 @@ class VoxCpm2Provider(VoiceCloneProvider):
     def _load_model(self):
         if self._model is not None:
             return self._model
+        _disable_teacher_compile_if_requested()
         try:
             from voxcpm import VoxCPM
         except ImportError as exc:  # pragma: no cover - optional dependency
